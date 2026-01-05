@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "LaSolution App",
+    "slug": "LaSolution App",
+    "version": "1.0.0",
+    "orientation": "portrait",
+
+    // 👇 Icône principale : ton logo existant
+    "icon": "./assets/images/new-logo.png",
+
+    "scheme": "app1",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+
+    "ios": {
+      "supportsTablet": true,
+      "icon": "./assets/images/new-logo.png",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Nous avons besoin d’accéder à votre galerie pour ajouter des photos de l’offre.",
+        "NSCameraUsageDescription": "Nous avons besoin d’accéder à votre caméra pour prendre des photos de l’offre."
+      }
+    },
+
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/new-logo.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES"
+      ],
+      "icon": "./assets/images/new-logo.png"
+    },
+
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/new-logo.png"
+    },
+
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/new-logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0A0F2C"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "expo-localization"
+    ],
+
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "indexes": [
+    /* ---- SERVICES ---- */
+    { "collectionGroup": "services", "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partenaire_ID", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",     "order": "DESCENDING" }
+      ]
+    },
+
+    /* recherche q (prefix) + tri createdAt */
+    { "collectionGroup": "services", "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "searchable", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "services", "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "searchable", "order": "DESCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    /* secteur + tri createdAt (pour ?secteur=...&sort=createdAt&dir=...) */
+    { "collectionGroup": "services", "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "Activity_Secteur", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",        "order": "ASCENDING" }
+      ]
+    },
+    /* (optionnel mais utile si tu tries DESC côté client) */
+    { "collectionGroup": "services", "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "Activity_Secteur", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",        "order": "DESCENDING" }
+      ]
+    },
+
+    /* ---- INSTANCES (collectionGroup) ---- */
+    { "collectionGroup": "instances", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    { "collectionGroup": "instances", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+
+    /* ---- RESERVATIONS (collectionGroup) ---- */
+    { "collectionGroup": "reservations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "partnerId", "order": "ASCENDING" },
+        { "fieldPath": "serviceId", "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "startAt",   "order": "ASCENDING" }
+      ]
+    },
+    { "collectionGroup": "reservations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "startAt",    "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "reservations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "serviceId",  "order": "ASCENDING" },
+        { "fieldPath": "endAt",      "order": "ASCENDING" }
+      ]
+    },
+    { "collectionGroup": "reservations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "partnerUid", "order": "ASCENDING" },
+        { "fieldPath": "startAt",    "order": "ASCENDING" }
+      ]
+    },
+
+    /* ---- REVIEWS (collectionGroup) ---- */
+    { "collectionGroup": "reviews", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "serviceId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+
+    /* ---- CONVERSATIONS (collectionGroup) ---- */
+    { "collectionGroup": "conversations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "participantKeys", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "updatedAt",       "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "conversations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "participantKeys", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "updatedAt",       "order": "ASCENDING" }
+      ]
+    },
+    { "collectionGroup": "conversations", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "participantKeys", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "channel",         "order": "ASCENDING" },
+        { "fieldPath": "updatedAt",       "order": "DESCENDING" }
+      ]
+    },
+
+    /* ---- PAYMENTS (collectionGroup) ---- */
+    { "collectionGroup": "payments", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "partnerId", "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    { "collectionGroup": "payments", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "clientId",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "payments", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "clientId",  "order": "ASCENDING" },
+        { "fieldPath": "serviceId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "payments", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "clientId",  "order": "ASCENDING" },
+        { "fieldPath": "partnerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    { "collectionGroup": "payments", "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "clientId",  "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
