@@ -1,23 +1,30 @@
-// utils/checkAvailability.js
 const { DateTime } = require("luxon");
 const { db } = require("../config/firebase");
 
+/* -----------------------------------------------------------
+   Utils
+----------------------------------------------------------- */
 function mm(str) {
   const [h, m] = str.split(":").map(Number);
   return h * 60 + m;
 }
 
+// ISO (1=lun … 7=dim) ➜ JS (0=dim … 6=sam)
+function isoToJsWeekday(iso) {
+  return iso === 7 ? 0 : iso;
+}
+
 module.exports.checkAvailability = async ({
   partnerUid,
   serviceId,
-  date,
-  startTime,
-  endTime,
+  date,       // YYYY-MM-DD
+  startTime,  // HH:mm
+  endTime,    // HH:mm
 }) => {
   const TZ = "America/Toronto";
 
   /* -----------------------------------------------------------
-     Construire les DateTime
+     Construire les DateTime (LOCAL TZ)
   ----------------------------------------------------------- */
   const startDt = DateTime.fromISO(`${date}T${startTime}`, { zone: TZ });
   const endDt   = DateTime.fromISO(`${date}T${endTime}`,   { zone: TZ });
@@ -29,7 +36,7 @@ module.exports.checkAvailability = async ({
     return { ok: false, reason: "L’heure de fin doit être après l’heure de début." };
 
   /* -----------------------------------------------------------
-     1) Charger le service
+     Charger le service
   ----------------------------------------------------------- */
   const svcDoc = await db.collection("services").doc(serviceId).get();
   if (!svcDoc.exists)
@@ -39,33 +46,21 @@ module.exports.checkAvailability = async ({
 
   const svcStart = svc.Availability?.startTime;
   const svcEnd   = svc.Availability?.endTime;
-  const svcDays  = svc.Availability?.days || [];
+  const svcDays  = svc.Availability?.days || []; // ISO 1..7
 
   if (!svcStart || !svcEnd)
     return { ok: false, reason: "Ce service n’a pas d’horaires configurés." };
 
   /* -----------------------------------------------------------
-     🔥 FIX CRITIQUE : Mapper correctement les jours
-     Luxon weekday => 1 (lun) … 7 (dim)
-     Firestore days => 0 (dim) … 6 (sam)
-
-     Conversion :
-        jsWeekday = luxon % 7
-        1→1, 2→2, …, 6→6, 7→0 ✔
+     Jour ISO (service)
   ----------------------------------------------------------- */
-  const jsWeekday = startDt.weekday % 7;
+  const isoWeekday = startDt.weekday; // 1..7
 
-  console.log("🟦 WEEKDAY CHECK:", {
-    luxon: startDt.weekday,
-    converted: jsWeekday,
-    allowedDays: svcDays,
-  });
-
-  if (!svcDays.includes(jsWeekday))
+  if (svcDays.length > 0 && !svcDays.includes(isoWeekday))
     return { ok: false, reason: "Ce service n’est pas offert ce jour-là." };
 
   /* -----------------------------------------------------------
-     Vérifier l'intervalle d'horaires du service
+     Vérifier intervalle du service
   ----------------------------------------------------------- */
   const svcStartDt = DateTime.fromISO(`${date}T${svcStart}`, { zone: TZ });
   const svcEndDt   = DateTime.fromISO(`${date}T${svcEnd}`,   { zone: TZ });
@@ -74,8 +69,7 @@ module.exports.checkAvailability = async ({
     return { ok: false, reason: "L’horaire choisi n’est pas disponible pour ce service." };
 
   /* -----------------------------------------------------------
-     2) Vérifier disponibilité de l’hôte
-     (weekly + override)
+     Disponibilité de l’hôte (weekly + override)
   ----------------------------------------------------------- */
   const snap = await db
     .collection("partner_availability")
@@ -83,16 +77,13 @@ module.exports.checkAvailability = async ({
     .where("active", "==", true)
     .get();
 
-  const items = snap.docs.map((d) => d.data());
-
+  const items = snap.docs.map(d => d.data());
   const weekly    = items.filter(d => d.kind === "weekly");
   const overrides = items.filter(d => d.kind === "override");
 
   const override = overrides.find(o => o.date === date);
 
-  /* -----------------------------------------------------------
-     OVERRIDE PRIORITAIRE
-  ----------------------------------------------------------- */
+  /* ---------------- OVERRIDE (prioritaire) ---------------- */
   if (override) {
     if (override.closed)
       return { ok: false, reason: "L’hôte n’est pas disponible à cette date." };
@@ -106,10 +97,17 @@ module.exports.checkAvailability = async ({
       return { ok: false, reason: "L’horaire sélectionné n’est pas disponible cette journée-là." };
   }
 
-  /* -----------------------------------------------------------
-     WEEKLY (si pas d'override)
-  ----------------------------------------------------------- */
+  /* ---------------- WEEKLY ---------------- */
   else {
+    const jsWeekday = isoToJsWeekday(isoWeekday); // ✅ conversion explicite
+
+    console.log("CHECK WEEKDAY", {
+    date,
+    isoWeekday,
+    jsWeekday,
+    weeklyDays: weekly.map(w => w.day),
+  });
+
     const w = weekly.find(w => w.day === jsWeekday);
 
     if (!w)
@@ -128,7 +126,7 @@ module.exports.checkAvailability = async ({
   }
 
   /* -----------------------------------------------------------
-     3) Vérifier conflits avec autres réservations
+     Conflits avec autres réservations
   ----------------------------------------------------------- */
   const resSnap = await db
     .collection("reservations")
@@ -138,22 +136,19 @@ module.exports.checkAvailability = async ({
 
   for (const doc of resSnap.docs) {
     const r = doc.data();
-
     if (["cancelled", "refused"].includes(r.status)) continue;
 
     const rStart = DateTime.fromISO(`${date}T${r.calendar.time}`, { zone: TZ });
     const rEnd   = rStart.plus({ minutes: r.durationMin });
 
-    const conflict = !(endDt <= rStart || startDt >= rEnd);
-    if (conflict)
+    if (!(endDt <= rStart || startDt >= rEnd))
       return { ok: false, reason: "Ce créneau est déjà réservé." };
   }
 
   /* -----------------------------------------------------------
-     4) Vérifier capacité (instances)
+     Capacité
   ----------------------------------------------------------- */
   const capacity = svc.Availability?.instances || 1;
-
   const activeBookings = resSnap.docs.filter(
     d => !["cancelled", "refused"].includes(d.data().status)
   ).length;

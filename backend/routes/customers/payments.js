@@ -1,312 +1,308 @@
-// routes/customers/payments.js
-const express = require('express');
-const { body, query, validationResult } = require('express-validator');
-const { db } = require('../../config/firebase');
-const authGuard = require('../../middleware/authGuard');
-const Stripe = require('stripe');
+const express = require("express");
+const { body, query, validationResult } = require("express-validator");
+const authGuard = require("../../middleware/authGuard");
+const Stripe = require("stripe");
+const pool = require("../../config/mysql");
 
 const router = express.Router();
 
-/* --- Guard: clé Stripe --- */
-if (!process.env.STRIPE_SECRET_KEY) {
-  console.warn('[payments] STRIPE_SECRET_KEY manquante (mode test recommandé: sk_test_...)');
-}
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_missing', {
-  apiVersion: '2024-06-20',
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_missing", {
+  apiVersion: "2024-06-20",
 });
 
-/* --- Ping simple --- */
-router.get('/_ping', (_req, res) => res.json({ ok: true, scope: 'customers-payments' }));
+/* ---------------------------------------------------- */
 
-/* --- Helpers --- */
 function handleValidation(req, res) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
   }
 }
-function normalizeContractPayload(p) {
-  return {
-    contrat_ID: p.contrat_ID,
-    date_ID: p.date_ID,
-    Client_ID: p.Client_ID,
-    Partenaire_ID: p.Partenaire_ID,
-    Service_ID: p.Service_ID,
-    Location: p.Location || null,
-    Payment_methode: p.Payment_methode || 'card',
-  };
-}
 
-/* --- Créer PaymentIntent + Contract --- */
+/* ---------------------------------------------------- */
+/* PING */
+/* ---------------------------------------------------- */
+
+router.get("/_ping", (_req, res) => {
+  res.json({ ok: true });
+});
+
+/* ---------------------------------------------------- */
+/* CREATE PAYMENT INTENT */
+/* ---------------------------------------------------- */
+
 router.post(
-  '/intents',
+  "/intents",
   authGuard,
   [
-    body('amount').isInt({ min: 50 }),
-    body('currency').isString().isLength({ min: 3, max: 3 }),
-    body('Partenaire_ID').isString().notEmpty(),
-    body('Service_ID').isString().notEmpty(),
-    body('Location').optional(),
-    body('Payment_methode').optional().isString(),
-    body('contrat_ID').optional().isString(),
-    body('date_ID').optional().isInt(),
-    body('description').optional().isString(),
+    body("amount").isInt({ min: 50 }),
+    body("currency").isString().isLength({ min: 3, max: 3 }),
+    body("Service_ID").isString(),
   ],
   async (req, res) => {
+
     const v = handleValidation(req, res);
     if (v) return v;
 
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: 'Stripe non configuré (STRIPE_SECRET_KEY manquante)' });
-    }
-
     try {
-      const {
-        amount,
-        currency,
-        Partenaire_ID,
-        Service_ID,
-        Location,
-        Payment_methode = 'card',
-        contrat_ID,
-        date_ID,
-        description,
-        idempotencyKey,
-      } = req.body;
 
-      const Client_ID = req.user.uid;
+      const { amount, currency, Service_ID } = req.body;
+      const Client_ID = req.user.id;
 
-      const pi = await stripe.paymentIntents.create(
-  {
-    amount: Number(amount),
-    currency: String(currency).toLowerCase(),
-    description: description || `Service ${Service_ID} (Partner ${Partenaire_ID})`,
-    metadata: { Client_ID, Partenaire_ID, Service_ID },
-    // ✅ Autoriser les moyens automatiques MAIS sans redirections (Klarna/Link, etc.)
-    automatic_payment_methods: {
-      enabled: true,
-      allow_redirects: 'never',
-    },
-  },
-  idempotencyKey ? { idempotencyKey } : undefined
-);
+      /* ------------------------------------------------ */
+      /* GET SERVICE INFO                                 */
+      /* ------------------------------------------------ */
 
-
-      const contractsCol = db.collection('contracts');
-      const paymentsCol = db.collection('payments');
-
-      const contractDocRef = contractsCol.doc(contrat_ID || pi.id);
-      const now = new Date();
-      const yyyymmdd = Number(
-        `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+      const [serviceRows] = await pool.query(
+        `SELECT partner_id, fee FROM services WHERE id = ?`,
+        [Service_ID]
       );
 
-      const contractData = normalizeContractPayload({
-        contrat_ID: contractDocRef.id,
-        date_ID: date_ID || yyyymmdd,
-        Client_ID,
-        Partenaire_ID,
-        Service_ID,
-        Location,
-        Payment_methode,
+      if (!serviceRows.length) {
+        return res.status(404).json({ error: "Service not found" });
+      }
+
+      const service = serviceRows[0];
+
+      const partnerId = service.partner_id;
+      const baseAmount = Number(service.fee);
+
+      const taxAmount = 0;
+      const totalAmount = baseAmount + taxAmount;
+
+      /* ------------------------------------------------ */
+      /* CREATE RESERVATION                               */
+      /* ------------------------------------------------ */
+
+      const now = new Date();
+      const end = new Date(now.getTime() + 60 * 60 * 1000);
+
+      const [reservationResult] = await pool.query(
+        `
+        INSERT INTO reservations
+        (
+          reservation_uuid,
+          customer_id,
+          partner_id,
+          service_id,
+          status_id,
+          currency_id,
+          base_amount,
+          tax_amount,
+          total_amount,
+          start_at,
+          end_at
+        )
+        VALUES
+        (
+          UUID(),
+          ?,
+          ?,
+          ?,
+          1,
+          1,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?
+        )
+        `,
+        [
+          Client_ID,
+          partnerId,
+          Service_ID,
+          baseAmount,
+          taxAmount,
+          totalAmount,
+          now,
+          end
+        ]
+      );
+
+      const reservationId = reservationResult.insertId;
+
+      /* ------------------------------------------------ */
+      /* STRIPE PAYMENT INTENT                            */
+      /* ------------------------------------------------ */
+
+      const pi = await stripe.paymentIntents.create({
+        amount: Math.round(amount),
+        currency: currency.toLowerCase(),
+        metadata: {
+          reservation_id: reservationId,
+          customer_id: Client_ID
+        },
+        automatic_payment_methods: {
+          enabled: true,
+          allow_redirects: "never",
+        },
       });
 
-      const batch = db.batch();
+      /* ------------------------------------------------ */
+      /* STRIPE CHECKOUT WEB                              */
+      /* ------------------------------------------------ */
 
-      batch.set(contractDocRef, {
-        ...contractData,
-        createdAt: now,
-        updatedAt: now,
-        status: 'pending',
-        stripe_payment_intent_id: pi.id,
-        currency: String(currency).toUpperCase(),
-        amount: Number(amount),
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8081";
+
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: currency.toLowerCase(),
+              product_data: {
+                name: `Service ${Service_ID}`,
+              },
+              unit_amount: Math.round(amount),
+            },
+            quantity: 1,
+          },
+        ],
+        metadata: {
+          reservation_id: reservationId,
+          customer_id: Client_ID
+        },
+        success_url: `${frontendUrl}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${frontendUrl}/payment-cancel`,
       });
 
-      const paymentDocRef = paymentsCol.doc(pi.id);
-      batch.set(paymentDocRef, {
-        id: pi.id,
-        clientId: Client_ID,
-        partnerId: Partenaire_ID,
-        serviceId: Service_ID,
-        amount: Number(amount),
-        currency: String(currency).toUpperCase(),
-        status: pi.status,
-        latest_charge: pi.latest_charge || null,
-        payment_method_types: pi.payment_method_types || null,
-        createdAt: now,
-        updatedAt: now,
-        contractId: contractDocRef.id,
-      });
+      /* ------------------------------------------------ */
+      /* INSERT PAYMENT                                   */
+      /* ------------------------------------------------ */
 
-      await batch.commit();
+      await pool.query(
+        `
+        INSERT INTO payments
+        (
+          payment_uuid,
+          reservation_id,
+          stripe_payment_intent_id,
+          amount,
+          currency_id,
+          status
+        )
+        VALUES
+        (
+          UUID(),
+          ?,
+          ?,
+          ?,
+          1,
+          'pending'
+        )
+        `,
+        [
+          reservationId,
+          pi.id,
+          totalAmount
+        ]
+      );
 
-
-/* ---------------------------------------------------------
-   ⭐ AJOUT NOTIFICATION : Paiement lancé
---------------------------------------------------------- */
-try {
-  await db
-    .collection("customers")
-    .doc(Client_ID)
-    .collection("notifs")
-    .doc()
-    .set({
-      type: "payment",
-      title: "Paiement en cours",
-      body: `Votre paiement pour le service ${Service_ID} est en cours.`,
-      data: {
-        paymentIntentId: pi.id,
-        contractId: contractDocRef.id,
-      },
-      status: "unread",
-      createdAt: new Date(),
-      readAt: null,
-    });
-} catch (err) {
-  console.error("[PAYMENTS][NOTIF_CREATE][ERROR]", err);
-}
-
-
-
+      /* ------------------------------------------------ */
+      /* RESPONSE                                         */
+      /* ------------------------------------------------ */
 
       return res.status(201).json({
-        contract: { id: contractDocRef.id, ...contractData },
         payment_intent: {
           id: pi.id,
           client_secret: pi.client_secret,
           status: pi.status,
-          amount: pi.amount,
-          currency: pi.currency,
         },
+        checkoutUrl: session.url,
       });
+
     } catch (err) {
-      console.error('[PAYMENTS][INTENTS][ERROR]', err);
-      return res.status(500).json({ error: 'Unable to create payment intent.' });
+
+      console.error("[PAYMENTS][INTENTS][ERROR]", err);
+
+      res.status(500).json({
+        error: "Unable to create payment intent."
+      });
+
     }
   }
 );
 
-/* --- Historique --- */
+/* ---------------------------------------------------- */
+/* PAYMENT HISTORY                                      */
+/* ---------------------------------------------------- */
+
 router.get(
-  '/history',
+  "/history",
   authGuard,
-  [
-    query('partnerId').optional().isString(),
-    query('serviceId').optional().isString(),
-    query('status').optional().isString(),
-    query('limit').optional().isInt({ min: 1, max: 50 }),
-  ],
+  [query("limit").optional().isInt({ min: 1, max: 50 })],
   async (req, res) => {
-    const v = handleValidation(req, res);
-    if (v) return v;
 
     try {
-      const clientId = req.user.uid;
-      const { partnerId, serviceId, status } = req.query;
+
+      const clientId = req.user.id;
       const limit = Number(req.query.limit || 20);
 
-      let q = db.collection('payments').where('clientId', '==', clientId);
-      if (partnerId) q = q.where('partnerId', '==', partnerId);
-      if (serviceId) q = q.where('serviceId', '==', serviceId);
-      if (status) q = q.where('status', '==', status);
+      const [rows] = await pool.query(
+        `
+        SELECT p.*
+        FROM payments p
+        JOIN reservations r ON p.reservation_id = r.id
+        WHERE r.customer_id = ?
+        ORDER BY p.created_at DESC
+        LIMIT ?
+        `,
+        [clientId, limit]
+      );
 
-      const snap = await q.orderBy('createdAt', 'desc').limit(limit).get();
+      res.json({ payments: rows });
 
-      const payments = [];
-      snap.forEach((doc) => payments.push({ id: doc.id, ...doc.data() }));
-
-      return res.json({ payments });
     } catch (err) {
-      console.error('[PAYMENTS][HISTORY][ERROR]', err);
-      return res.status(500).json({ error: 'Unable to fetch payment history.' });
+
+      console.error("[PAYMENTS][HISTORY][ERROR]", err);
+
+      res.status(500).json({
+        error: "Unable to fetch payment history."
+      });
+
     }
   }
 );
 
-/* --- Get Contract --- */
-router.get('/contracts/:id', authGuard, async (req, res) => {
+/* ---------------------------------------------------- */
+/* DEV CONFIRM PAYMENT                                  */
+/* ---------------------------------------------------- */
+
+router.post("/intents/:id/confirm", authGuard, async (req, res) => {
+
   try {
-    const doc = await db.collection('contracts').doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'Contract not found' });
 
-    const data = doc.data();
-    if (data.Client_ID !== req.user.uid) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (process.env.NODE_ENV === "production") {
+      return res.status(403).json({ error: "Not allowed in production" });
     }
 
-    return res.json({ contract: { id: doc.id, ...data } });
-  } catch (err) {
-    console.error('[PAYMENTS][CONTRACTS][GET][ERROR]', err);
-    return res.status(500).json({ error: 'Unable to fetch contract.' });
-  }
-});
-
-/* --- Dev-only: confirmer un intent pour tests Postman --- */
-router.post('/intents/:id/confirm', authGuard, async (req, res) => {
-  try {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ error: 'Not allowed in production' });
-    }
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: 'Stripe non configuré' });
-    }
     const id = req.params.id;
+
     const confirmed = await stripe.paymentIntents.confirm(id, {
-      payment_method: 'pm_card_visa', // carte test succès
+      payment_method: "pm_card_visa",
     });
 
-    // maj Firestore rapide
-    await db.collection('payments').doc(id).set(
-      {
-        status: confirmed.status,
-        latest_charge: confirmed.latest_charge || null,
-        updatedAt: new Date(),
-      },
-      { merge: true }
+    await pool.query(
+      `
+      UPDATE payments
+      SET status = ?
+      WHERE stripe_payment_intent_id = ?
+      `,
+      [confirmed.status, id]
     );
-    if (confirmed.status === 'succeeded') {
-      await db.collection('contracts').doc(confirmed.id).set(
-        { status: 'paid', updatedAt: new Date() },
-        { merge: true }
-      );
-    }
 
+    res.json({ payment_intent: confirmed });
 
-if (confirmed.status === 'succeeded') {
-  try {
-    const paymentDoc = await db.collection('payments').doc(confirmed.id).get();
-    const p = paymentDoc.data();
-
-    await db
-      .collection("customers")
-      .doc(p.clientId)
-      .collection("notifs")
-      .doc()
-      .set({
-        type: "payment_success",
-        title: "Paiement réussi",
-        body: `Votre paiement de ${(p.amount/100).toFixed(2)} ${p.currency} a été confirmé.`,
-        data: {
-          paymentIntentId: confirmed.id,
-          contractId: p.contractId,
-        },
-        status: "unread",
-        createdAt: new Date(),
-        readAt: null,
-      });
-  } catch (e) {
-    console.error("[PAYMENTS][NOTIF_SUCCESS][ERROR]", e);
-  }
-}
-
-
-
-    return res.json({ payment_intent: confirmed });
   } catch (err) {
-    console.error('[PAYMENTS][INTENTS_CONFIRM][ERROR]', err);
-    return res.status(500).json({ error: 'Unable to confirm payment intent.' });
+
+    console.error("[PAYMENTS][CONFIRM][ERROR]", err);
+
+    res.status(500).json({
+      error: "Unable to confirm payment."
+    });
+
   }
 });
 

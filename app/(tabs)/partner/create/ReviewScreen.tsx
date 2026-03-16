@@ -19,7 +19,6 @@ const PALETTE = {
 const RAW_API_BASE = process.env.EXPO_PUBLIC_API_BASE ?? 'http://127.0.0.1:5055/api/v1';
 const API_BASE = RAW_API_BASE.replace(/\/+$/, '');
 const PUBLISH_URL = `${API_BASE}/partners/services`;
-const UPGRADE_URL = `${API_BASE}/customers/upgrade-to-partner`;
 
 type Pic = { uri: string; width?: number; height?: number };
 type DraftStep1 = { Service?: string; Categorie?: string; Description?: string; Activity_Secteur?: string };
@@ -48,7 +47,7 @@ function uniqBy<T>(arr: T[], pick: (x: T) => string) {
 
 // -- Wrapper: ajoute Authorization + tente /auth/refresh si 401
 async function fetchWithAuth(url: string, init: RequestInit = {}) {
-  const idToken = await AsyncStorage.getItem('idToken');
+  const authToken = await AsyncStorage.getItem('authToken');
   const refreshToken = await AsyncStorage.getItem('refreshToken');
 
   const doFetch = (token?: string) =>
@@ -57,7 +56,7 @@ async function fetchWithAuth(url: string, init: RequestInit = {}) {
       headers: {
         'Content-Type': 'application/json',
         ...(init.headers || {}),
-        Authorization: `Bearer ${token ?? idToken}`,
+        Authorization: `Bearer ${token || authToken}`,
       } as any,
     });
 
@@ -71,37 +70,15 @@ async function fetchWithAuth(url: string, init: RequestInit = {}) {
       body: JSON.stringify({ refreshToken }),
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok || !data.idToken) return resp; // garde le 401 original
-    await AsyncStorage.setItem('idToken', String(data.idToken));
-    resp = await doFetch(String(data.idToken)); // rejoue la requête
+    if (!r.ok || !data.authToken) return resp; // garde le 401 original
+    await AsyncStorage.setItem('authToken', String(data.authToken));
+    resp = await doFetch(String(data.authToken)); // rejoue la requête
     return resp;
   } catch {
     return resp;
   }
 }
 
-/** S’assure que le user est bien partenaire côté backend */
-async function ensurePartner(): Promise<boolean> {
-  try {
-    const resp = await fetchWithAuth(UPGRADE_URL, { method: 'POST' });
-
-    // 200 = nouvellement partenaire, 409 = déjà partenaire
-    if (resp.ok || resp.status === 409) {
-      return true;
-    }
-
-    const txt = await resp.text();
-    let data: any = {};
-    try { data = txt ? JSON.parse(txt) : {}; } catch {}
-
-    const msg = (data?.message || data?.error || txt || 'Impossible de valider le rôle partenaire').toString();
-    Alert.alert('Devenir partenaire', msg);
-    return false;
-  } catch (e: any) {
-    Alert.alert('Devenir partenaire', e?.message || 'Impossible de vérifier le rôle partenaire.');
-    return false;
-  }
-}
 
 export default function ReviewScreen() {
   const router = useRouter();
@@ -170,82 +147,165 @@ export default function ReviewScreen() {
 
   // ✅ Validation plus souple (dispos & photos optionnelles)
   const isValid = useMemo(() =>
-    Boolean(
-      s1?.Service?.trim() && s1?.Categorie?.trim() && (s1?.Description?.trim()?.length ?? 0) >= 1 &&
-      (typeof s2?.price === 'number' ? s2?.price > 0 : Number(s2?.price) > 0)
-    ), [s1, s2]
-  );
+  Boolean(
+    s1?.Service?.trim() &&
+    s1?.Categorie?.trim() &&
+    (s1?.Description?.trim()?.length ?? 0) >= 3 &&
+    Number(s2?.price) > 0
+  ), [s1, s2]
+)
 
-  const payload = useMemo(() => {
-    const currency = (s2?.currency || 'CAD').toUpperCase().slice(0,3);
-    const fee = typeof s2?.price === 'number' ? s2.price : Number(s2?.price) || 0;
-    const pics = allPictures.slice(0, 10).map(img => ({ uri: String(img.uri) }));
+  // --- CORRECTION DANS payload (vers ~ligne 230) ---
 
-    return {
-      Service: s1?.Service?.trim(),
-      Categorie: s1?.Categorie?.trim(),
-      Description: s1?.Description?.trim(),
-      Activity_Secteur: s1?.Activity_Secteur?.trim() || s1?.Categorie?.trim(),
-      Fee: fee,
-      Pricing: { currency },
-      Pictures: pics,                         // optionnel
-      Availability: s4?.availability || null, // optionnel (inclut instances)
-    };
-  }, [s1, s2, s4, allPictures]);
+const payload = useMemo(() => {
+
+  const fee =
+    typeof s2?.price === "number"
+      ? s2.price
+      : Number(s2?.price) || 0
+
+  return {
+
+    title: s1?.Service?.trim(),
+
+    description: s1?.Description?.trim(),
+
+    // ton backend attend "category"
+    category: s1?.Categorie?.trim(),
+
+    fee: fee,
+
+    // valeur temporaire
+    radius_km: 10,
+
+    // coordonnées temporaires (sinon validation échoue)
+    latitude: 45.5017,
+    longitude: -73.5673
+
+  }
+
+}, [s1, s2])
 
   const publish = useCallback(async () => {
-    if (!isValid) {
-      Alert.alert('Champs manquants', 'Complète au moins Titre, Catégorie, Description et Prix (> 0).');
-      return;
+
+  if (!isValid) {
+    Alert.alert(
+      "Champs manquants",
+      "Complète au moins Titre, Catégorie, Description et Prix (> 0)."
+    )
+    return
+  }
+
+  setPublishing(true)
+
+  try {
+
+    const token = await AsyncStorage.getItem("authToken")
+
+    if (!token) {
+      throw new Error("Non connecté — reconnecte-toi pour publier.")
     }
 
-    setPublishing(true);
-    try {
-      const token = await AsyncStorage.getItem('idToken');
-      if (!token) throw new Error('Non connecté — connecte-toi pour publier.');
+    const idempotency =
+      `svc_${Date.now()}_${Math.random().toString(36).slice(2)}`
 
-      // 🔒 1) s’assurer que ce compte est bien partenaire côté backend
-      const okPartner = await ensurePartner();
-      if (!okPartner) {
-        throw new Error("Accès réservé aux partenaires.");
-      }
-
-      // 2) publier le service
-      const idempotency = `svc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      const resp = await fetchWithAuth(PUBLISH_URL, {
-        method: 'POST',
-        headers: { 'X-Idempotency-Key': idempotency },
-        body: JSON.stringify(payload),
-      });
-
-      const text = await resp.text(); // on lit en texte d’abord pour debugger proprement
-      let data: any = {};
-      try { data = text ? JSON.parse(text) : {}; } catch { /* keep text */ }
-
-      if (!resp.ok) {
-        const msg = (data?.message || data?.error || text || 'Erreur de publication').toString();
-        throw new Error(`${msg} (HTTP ${resp.status})`);
-      }
-
-      // Purge des drafts si OK
-      await Promise.all([
-        AsyncStorage.removeItem('draft_service_step1'),
-        AsyncStorage.removeItem('draft_service_step2_price'),
-        AsyncStorage.removeItem('draft_service_step3_pictures'),
-        AsyncStorage.removeItem('draft_service_step4_availability'),
-      ]);
-
-      Alert.alert(
-        'Publié',
-        `Ton offre a été publiée${data?.item?.id ? ` (ID: ${data.item.id})` : ''}.`,
-        [{ text: 'OK', onPress: () => router.replace('/(tabs)/partner') }]
-      );
-    } catch (e: any) {
-      Alert.alert('Échec', e?.message || 'Impossible de publier.');
-    } finally {
-      setPublishing(false);
+    // ⚠️ correction ici (évite le bug Metro sur await)
+    const requestConfig: RequestInit = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": idempotency
+      },
+      body: JSON.stringify(payload)
     }
-  }, [isValid, payload, router]);
+
+    const resp = await fetchWithAuth(PUBLISH_URL, requestConfig)
+
+    const text = await resp.text()
+
+console.log("RAW RESPONSE:", text)
+
+let data = {}
+
+try {
+  data = text ? JSON.parse(text) : {}
+} catch {}
+
+console.log("PARSED DATA:", data)
+
+const serviceId =
+  data?.serviceId ??
+  data?.item?.id ??
+  data?.id ??
+  null
+
+console.log("SERVICE ID:", serviceId)
+
+if (serviceId && s4?.availability) {
+
+  const availabilityResp = await fetchWithAuth(
+    `${API_BASE}/partners/services/${serviceId}/availability`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        days: s4.availability.days,
+        startTime: s4.availability.startTime,
+        endTime: s4.availability.endTime,
+        instances: s4.availability.instances ?? 1
+      })
+    }
+  )
+
+  const availabilityData = await availabilityResp.json().catch(() => ({}))
+
+  console.log("AVAILABILITY STATUS:", availabilityResp.status)
+  console.log("AVAILABILITY RESPONSE:", availabilityData)
+
+  if (!availabilityResp.ok) {
+    throw new Error("Impossible d'enregistrer les disponibilités")
+  }
+
+}
+
+    if (!resp.ok) {
+
+      const msg =
+        (data?.message || data?.error || text || "Erreur de publication")
+          .toString()
+
+      throw new Error(`${msg} (HTTP ${resp.status})`)
+    }
+
+    await Promise.all([
+      AsyncStorage.removeItem("draft_service_step1"),
+      AsyncStorage.removeItem("draft_service_step2_price"),
+      AsyncStorage.removeItem("draft_service_step3_pictures"),
+      AsyncStorage.removeItem("draft_service_step4_availability"),
+    ])
+
+    Alert.alert(
+      "Publié",
+      `Ton offre a été publiée${data?.item?.id ? ` (ID: ${data.item.id})` : ""}.`,
+      [{
+        text: "OK",
+        onPress: () => router.replace("/(tabs)/partner")
+      }]
+    )
+
+  } catch (e: any) {
+
+    Alert.alert("Échec", e?.message || "Impossible de publier.")
+
+  } finally {
+
+    setPublishing(false)
+
+  }
+
+}, [isValid, payload, router])
 
   if (loading) {
     return (

@@ -5,14 +5,27 @@ const PALETTE = {
   tagBg: "#18233D",
   tagText: "#FFFFFF",
   border: "rgba(255,255,255,0.18)",
+  active: "#FFD700"
+};
+
+type Category = {
+  id: string;
+  name: string;
+  slug: string;
 };
 
 type Props = {
-  categories: string[];
-  onPressCategory: (cat: string) => void;
+  categories: Category[];
+  selectedCategory?: string | null;
+  onPressCategory: (category: Category) => void;
 };
 
-export default function ListCategory({ categories, onPressCategory }: Props) {
+export default function ListCategory({
+  categories,
+  onPressCategory,
+  selectedCategory
+}: Props) {
+
   if (!categories || categories.length === 0) return null;
 
   return (
@@ -21,22 +34,41 @@ export default function ListCategory({ categories, onPressCategory }: Props) {
 
       <FlatList
         data={categories}
-        keyExtractor={(item) => item}
+        keyExtractor={(item) => item.id}
         horizontal
         showsHorizontalScrollIndicator={false}
         ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
         contentContainerStyle={{ paddingVertical: 4 }}
-        renderItem={({ item }) => (
-          <TouchableOpacity onPress={() => onPressCategory(item)} style={styles.badge}>
-            <Text style={styles.badgeText}>{item}</Text>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+
+          const active = selectedCategory === item.slug;
+
+          return (
+            <TouchableOpacity
+              onPress={() => onPressCategory(item)}
+              style={[
+                styles.badge,
+                active && styles.badgeActive
+              ]}
+            >
+              <Text
+                style={[
+                  styles.badgeText,
+                  active && styles.badgeTextActive
+                ]}
+              >
+                {item.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        }}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+
   title: {
     color: "#FFFFFF",
     fontSize: 18,
@@ -53,9 +85,19 @@ const styles = StyleSheet.create({
     borderColor: PALETTE.border,
   },
 
+  badgeActive:{
+    backgroundColor: PALETTE.active,
+  },
+
   badgeText: {
     color: PALETTE.tagText,
     fontSize: 14,
     fontWeight: "600",
   },
+
+  badgeTextActive:{
+    color:"#0A0F2C",
+    fontWeight:"700"
+  }
+
 });

@@ -23,7 +23,7 @@ const DAYS = [
   { key: 4, label: 'Jeu' },
   { key: 5, label: 'Ven' },
   { key: 6, label: 'Sam' },
-  { key: 0, label: 'Dim' }, // ✔ DIMANCHE DOIT ÊTRE 0
+  { key: 7, label: 'Dim' }, 
 ];
 
 
@@ -47,7 +47,7 @@ export default function AvailabilityScreen() {
   const setPreset = useCallback((p:'all'|'week'|'weekend') => {
     if (p==='all') setSelectedDays(DAYS.map(d=>d.key));
     if (p==='week') setSelectedDays([1,2,3,4,5]);
-    if (p==='weekend') setSelectedDays([6,7]);
+    if (p==='weekend') setSelectedDays([6,0]);
   }, []);
 
   // Validation (HH:MM + ordre)
@@ -73,38 +73,34 @@ export default function AvailabilityScreen() {
   );
 
   const handleSave = useCallback(async () => {
-    if (!canSave) {
-      Alert.alert(
-        'Vérifie les champs',
-        'Choisis au moins un jour, une plage horaire valide (HH:MM) et un nombre d’instances entre 1 et 10.'
-      );
-      return;
+
+  if (!canSave) return;
+
+  try {
+
+    const availability = {
+      days: selectedDays,
+      startTime,
+      endTime,
+      instances: parseInt(instances,10)
     }
 
-    const instancesNumber = parseInt(instances, 10);
+    await AsyncStorage.setItem(
+      "draft_service_step4_availability",
+      JSON.stringify({ availability })
+    )
 
-    const payload = {
-      availability: {
-        days: selectedDays,
-        startTime,
-        endTime,
-        instances: instancesNumber, // ✅ on sauvegarde le nb d’instances ici
-      },
-      savedAt: Date.now(),
-    };
+    router.replace('/(tabs)/partner/create/ReviewScreen')
 
-    try {
-      await AsyncStorage.setItem(
-        'draft_service_step4_availability',
-        JSON.stringify(payload)
-      );
+  } catch(err){
 
-      // 🚀 Va sur le récap (chemin ABSOLU, pas relatif)
-      router.replace('/(tabs)/partner/create/ReviewScreen'); // ou router.push(...)
-    } catch {
-      Alert.alert('Erreur', 'Impossible de sauvegarder. Réessaie.');
-    }
-  }, [canSave, selectedDays, startTime, endTime, instances, router]);
+    console.error("SAVE AVAILABILITY ERROR:", err)
+
+    Alert.alert("Erreur","Impossible d'enregistrer les disponibilités")
+
+  }
+
+},[selectedDays,startTime,endTime,instances,canSave])
 
   return (
     <View style={{ flex:1, backgroundColor:PALETTE.cream }}>

@@ -1,305 +1,465 @@
-// routes/customers/services.js
-const express = require('express');
-const { query, validationResult } = require('express-validator');
-const { db } = require('../../config/firebase');
-const authGuard = require('../../middleware/authGuard');
-const { checkAvailability } = require("../../utils/checkAvailability");
+const express = require("express");
+const { query, param, validationResult } = require("express-validator");
+const { DateTime } = require("luxon");
+const db = require("../../config/mysql");
+const authGuard = require("../../middleware/authGuard");
 
 const router = express.Router();
 
-/* --------------------------------- Utils ---------------------------------- */
-function jitterAround(base, meters = 250) {
-  if (!base || typeof base.lat !== 'number' || typeof base.lng !== 'number') return null;
-  const dx = (Math.random() - 0.5) * 2;
-  const dy = (Math.random() - 0.5) * 2;
-  const dLat = meters / 111320;
-  const dLng = meters / (111320 * Math.cos((base.lat * Math.PI) / 180));
-  return { lat: base.lat + dy * dLat, lng: base.lng + dx * dLng };
+/* ============================================================
+   HELPER FUNCTIONS
+============================================================ */
+
+function handleValidation(req, res) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      ok: false,
+      errors: errors.array(),
+    });
+  }
+  return null;
 }
 
-/* ============================================================================
-   GET /customers/services/check-availability
-============================================================================ */
+function timeToMinutes(t) {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function parseRanges(val){
+
+  if(!val) return [];
+
+  if(typeof val === "object"){
+    return val;
+  }
+
+  try{
+    return JSON.parse(val);
+  }catch{
+    return [];
+  }
+
+}
+
+/* ============================================================
+   CHECK AVAILABILITY
+============================================================ */
+
 router.get(
-  '/check-availability',
-  authGuard,
+"/check-availability",
+authGuard,
+[
+query("serviceId").isString(),
+query("date").isISO8601(),
+query("startTime").matches(/^\d{2}:\d{2}$/),
+query("endTime").matches(/^\d{2}:\d{2}$/),
+],
+async (req,res)=>{
+
+if(handleValidation(req,res)) return;
+
+try{
+
+const { serviceId,date,startTime,endTime } = req.query;
+
+/* 1️⃣ récupérer service */
+
+const [svcRows] = await db.query(
+`
+SELECT id, partner_id
+FROM services
+WHERE id = ?
+`,
+[serviceId]
+);
+
+if(!svcRows.length){
+return res.json({ ok:false, reason:"Service introuvable." });
+}
+
+const partnerId = svcRows[0].partner_id;
+
+/* 2️⃣ récupérer disponibilités */
+
+const [rows] = await db.query(
+`
+SELECT *
+FROM partner_availability
+WHERE partner_id = ?
+`,
+[partnerId]
+);
+
+if(!rows.length){
+return res.json({ ok:false, reason:"Partenaire indisponible." });
+}
+
+/* 3️⃣ calcul jour */
+
+const dt = DateTime.fromISO(date,{ zone:"America/Toronto" });
+const weekday = dt.weekday;
+
+/* 4️⃣ override */
+
+const override = rows.find(
+r => r.kind === "override" && r.specific_date === date
+);
+
+let ranges = [];
+
+if(override){
+
+if(override.is_closed){
+return res.json({ ok:false, reason:"Partenaire fermé." });
+}
+
+ranges = parseRanges(override.ranges_json);
+}else{
+
+const weekly = rows.filter(
+r => r.kind === "weekly" && r.day_of_week === weekday
+);
+
+ranges = weekly.flatMap(r =>
+parseRanges(r.ranges_json)
+);
+
+if(!ranges.length){
+return res.json({ ok:false, reason:"Partenaire fermé ce jour." });
+}
+
+}
+
+/* 5️⃣ vérifier plage */
+
+const startMin = timeToMinutes(startTime);
+const endMin = timeToMinutes(endTime);
+
+let valid = false;
+
+for(const r of ranges){
+
+const rStart = timeToMinutes(r.start);
+const rEnd = timeToMinutes(r.end);
+
+if(startMin >= rStart && endMin <= rEnd){
+valid = true;
+break;
+}
+
+}
+
+if(!valid){
+return res.json({
+ok:false,
+reason:"Horaire hors disponibilité."
+});
+}
+
+/* 6️⃣ OK */
+
+return res.json({ ok:true });
+
+}catch(err){
+
+console.error("check availability error",err);
+return res.status(500).json({ ok:false });
+
+}
+
+});
+
+/* ============================================================
+   GET /customers/services/nearby
+============================================================ */
+
+router.get(
+  "/nearby",
   [
-    query('serviceId').notEmpty(),
-    query('date').notEmpty(),
-    query('startTime').notEmpty(),
-    query('endTime').notEmpty(),
+    query("lat").isFloat(),
+    query("lng").isFloat(),
+    query("category").optional().isString(),
   ],
   async (req, res) => {
+
+    if (handleValidation(req, res)) return;
+
     try {
-      const { serviceId, date, startTime, endTime } = req.query;
 
-      const svcDoc = await db.collection("services").doc(serviceId).get();
-      if (!svcDoc.exists)
-        return res.json({ ok: false, reason: "Service introuvable" });
+      const { lat, lng, category } = req.query;
 
-      const svc = svcDoc.data();
-      const partnerUid = svc.ownerUid;
+      const latitude = parseFloat(lat);
+      const longitude = parseFloat(lng);
 
-      if (!partnerUid)
-        return res.json({ ok: false, reason: "Service sans partenaire" });
+      let sql = `
+        SELECT
+          s.id,
+          s.title,
+          s.description,
+          s.fee,
+          s.radius_km,
+          s.available,
+          s.status,
+          s.category_id,
+          c.slug,
+          ST_Y(s.location) AS latitude,
+          ST_X(s.location) AS longitude,
+          ST_Distance_Sphere(
+            POINT(ST_X(s.location), ST_Y(s.location)),
+            POINT(?, ?)
+          ) / 1000 AS distance_km
+        FROM services s
+        JOIN categories c ON s.category_id = c.id
+        WHERE
+          s.available = TRUE
+          AND s.status = 'active'
+      `;
 
-      // 🔥 FIX : ici, date = "2025-12-28"
-      // checkAvailability doit travailler en JS-day (0= dimanche)
-      const avail = await checkAvailability({
-        partnerUid,
-        serviceId,
-        date,        // → checkAvailability doit gérer 0..6
-        startTime,
-        endTime,
-      });
+      const params = [longitude, latitude];
 
-      if (!avail.ok) return res.json(avail);
+      if (category && category !== "null" && category !== "undefined") {
+        sql += ` AND c.slug = ?`;
+        params.push(category);
+      }
 
-      return res.json({
-        ok: true,
-        durationMin: avail.durationMin,
-      });
+      sql += `
+        AND ST_Distance_Sphere(
+          POINT(ST_X(s.location), ST_Y(s.location)),
+          POINT(?, ?)
+        ) <= s.radius_km * 1000
+        ORDER BY distance_km ASC
+      `;
+
+      params.push(longitude, latitude);
+
+      console.log("NEARBY SQL:", sql);
+      console.log("NEARBY PARAMS:", params);
+
+      const [rows] = await db.execute(sql, params);
+
+      return res.json({ ok: true, items: rows });
 
     } catch (err) {
-      console.error("[CHECK-AVAILABILITY ERROR]", err);
-      return res.status(500).json({ ok: false, reason: "Erreur serveur" });
+
+      console.error("NEARBY ERROR", err);
+      return res.status(500).json({ ok: false });
+
     }
+
   }
 );
 
-/* ============================================================================
-   GET /customers/services — LISTE DE SERVICES
-============================================================================ */
-router.get(
-  '/',
-  authGuard,
-  [
-    query('date').optional().isString(),
-    query('q').optional().isString().trim().isLength({ max: 100 }),
-    query('category').optional().isString().trim(),
-    query('secteur').optional().isString().trim(),
-    query('partnerId').optional().isString().trim(),
-    query('move').optional().isIn(['Move', 'Fixe']),
-    query('minFee').optional().isFloat({ min: 0 }),
-    query('maxFee').optional().isFloat({ min: 0 }),
-    query('subscription').optional().isIn(['true', 'false']),
-    query('sort').optional().isIn(['createdAt', 'Fee']),
-    query('dir').optional().isIn(['asc', 'desc']),
-    query('limit').optional().isInt({ min: 1, max: 50 }),
-    query('cursor').optional().isString().trim(),
-  ],
-  async (req, res) => {
+/* ============================================================
+   GET /customers/services
+============================================================ */
 
-    const errors = validationResult(req);
-    if (!errors.isEmpty())
-      return res.status(400).json({ ok: false, errors: errors.array() });
+router.get("/", async (req, res) => {
 
-    try {
-      const {
-        q, category, secteur, partnerId, move,
-        minFee, maxFee, subscription,
-        sort, dir = 'desc',
-        limit = 12, cursor,
-        date
-      } = req.query;
+  try {
 
-      const targetDate = date ? String(date) : null;
+    const {
+      category,
+      date,
+      minFee,
+      maxFee,
+      q,
+      sort = "created_at",
+      dir = "desc",
+      limit = 20
+    } = req.query;
 
-      console.log("📌 SERVICES LIST — TARGET DATE =", targetDate);
+    /* ---------- SAFE SORT ---------- */
 
-      let ref = db.collection('services');
+    const allowedSort = ["created_at", "fee"];
+    const allowedDir = ["asc", "desc"];
 
-      /* ---------------------- FILTRES ---------------------- */
-      if (category) ref = ref.where('Categorie', '==', category);
-      if (secteur) ref = ref.where('Activity_Secteur', '==', secteur);
-      if (partnerId) ref = ref.where('partenaire_ID', '==', partnerId);
-      if (move) ref = ref.where('Location_Fixe_Move', '==', move);
+    const safeSort = allowedSort.includes(sort) ? sort : "created_at";
+    const safeDir = allowedDir.includes(dir) ? dir : "desc";
 
-      if (subscription === 'true') ref = ref.where('Subscribtion', '==', true);
-      if (subscription === 'false') ref = ref.where('Subscribtion', '==', false);
+    const safeLimit = Math.min(parseInt(limit || 20, 10), 50);
 
-      let usesIneqOn = null;
+    /* ---------- DATE ---------- */
 
-      if (minFee) { ref = ref.where('Fee', '>=', Number(minFee)); usesIneqOn = 'Fee'; }
-      if (maxFee) { ref = ref.where('Fee', '<=', Number(maxFee)); usesIneqOn = 'Fee'; }
+    let searchDate = date;
 
-      if (q && q.trim()) {
-        const qLower = q.trim().toLowerCase();
-        ref = ref
-          .where('searchable', '>=', qLower)
-          .where('searchable', '<', qLower + '\uf8ff');
-        usesIneqOn = 'searchable';
-      }
+    if (!searchDate) {
+      const today = new Date();
+      searchDate = today.toISOString().split("T")[0];
+    }
 
-      if (usesIneqOn) {
-        ref = ref.orderBy(usesIneqOn);
-        if (sort && sort !== usesIneqOn) ref = ref.orderBy(sort, dir);
-      } else if (sort) {
-        ref = ref.orderBy(sort, dir);
-      }
+    const parts = searchDate.split("-");
+const d = new Date(parts[0], parts[1]-1, parts[2]);
 
-      if (cursor) {
-        const docSnap = await db.collection('services').doc(cursor).get();
-        if (!docSnap.exists)
-          return res.status(400).json({ ok: false, message: 'Cursor invalide' });
-        ref = ref.startAfter(docSnap);
-      }
+let weekday = d.getDay();
+weekday = weekday === 0 ? 7 : weekday;
 
-      const snap = await ref.limit(Number(limit)).get();
-      const items = [];
+console.log("SEARCH DATE:", searchDate)
+console.log("WEEKDAY:", weekday)
 
-      console.log(`📅 TARGET DATE = ${targetDate}`);
+    /* ---------- SQL BUILDER ---------- */
 
-      /* -----------------------------------------------------------
-   CALCUL DES PLACES — IGNORE CANCELLED BOOKINGS
------------------------------------------------------------ */
-for (const d of snap.docs) {
-  const svc = { id: d.id, ...d.data() };
+    let sql = `
+      SELECT DISTINCT
+        s.id,
+        s.title,
+        s.description,
+        s.fee,
+        s.category_id,
+        c.slug,
+        s.status,
+        s.available,
+        s.created_at
+      FROM services s
+      JOIN categories c ON s.category_id = c.id
+      JOIN service_availability sa
+        ON sa.service_id = s.id
+        AND sa.weekday = ?
+      WHERE
+        s.status = 'active'
+        AND s.available = TRUE
+    `;
 
-  const instancesTotal =
-    (svc.Availability?.instances ?? svc.places ?? 0);
+    const params = [weekday];
 
-  if (instancesTotal <= 0) continue;
+    /* ---------- CATEGORY ---------- */
 
-  let instancesBooked = 0;
+    if (category && category !== "null" && category !== "undefined") {
+      sql += ` AND c.slug = ?`;
+      params.push(category);
+    }
 
-  if (targetDate) {
-    const resSnap = await db
-      .collection('reservations')
-      .where('serviceId', '==', d.id)
-      .get();
+    /* ---------- CAPACITÉ JOURNALIÈRE ---------- */
 
-    const allReservations = resSnap.docs.map(doc => {
-      const r = doc.data() || {};
-      return {
-        id: doc.id,
-        status: r.status,
-        calDate: r.calendar?.date,
-      };
+sql += `
+AND (
+  SELECT COUNT(*)
+  FROM reservations r
+  WHERE r.service_id = s.id
+  AND DATE(r.start_at) = ?
+  AND r.status_id != 4
+) < s.instances
+`;
+
+    params.push(searchDate);
+
+    /* ---------- PRICE ---------- */
+
+    if (minFee) {
+      sql += ` AND s.fee >= ?`;
+      params.push(Number(minFee));
+    }
+
+    if (maxFee) {
+      sql += ` AND s.fee <= ?`;
+      params.push(Number(maxFee));
+    }
+
+    /* ---------- SEARCH ---------- */
+
+    if (q) {
+      sql += ` AND (s.title LIKE ? OR s.description LIKE ?)`;
+      params.push(`%${q}%`, `%${q}%`);
+    }
+
+    /* ---------- ORDER ---------- */
+
+    sql += ` ORDER BY s.${safeSort} ${safeDir} LIMIT ${safeLimit}`;
+
+    /* ---------- DEBUG LOGS ---------- */
+
+    console.log("SERVICES SQL:");
+    console.log(sql);
+
+    console.log("SERVICES PARAMS:");
+    console.log(params);
+
+    /* ---------- EXECUTE ---------- */
+
+    const [rows] = await db.execute(sql, params);
+
+    return res.json({
+      ok: true,
+      count: rows.length,
+      items: rows
     });
 
-    instancesBooked = allReservations.filter(r =>
-      r.status !== "cancelled" && r.calDate === targetDate
-    ).length;
+  } catch (err) {
+
+    console.error("LIST SERVICES ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Internal server error"
+    });
+
   }
 
-const remainingInstances = Math.max(instancesTotal - instancesBooked, 0);
+});
 
+/* ============================================================
+   GET /customers/services/:id
+============================================================ */
 
-  items.push({
-    ...svc,
-    instancesTotal,
-    instancesBooked,
-    remainingInstances,   // ⭐ OBLIGATOIRE
-    isFull: remainingInstances === 0, // ⭐ super pratique aussi
-  });
-}
+router.get(
+  "/:id",
+  [param("id").isString()],
+  async (req, res) => {
 
+    if (handleValidation(req, res)) return;
 
-      const nextCursor =
-        snap.size > 0 && items.length > 0
-          ? items[items.length - 1].id
-          : null;
+    try {
+
+      const { id } = req.params;
+
+      const [rows] = await db.execute(
+        `
+        SELECT
+  s.id,
+  s.title,
+  s.description,
+  s.fee,
+  s.category_id,
+  s.status,
+  s.available,
+  s.created_at,
+  sa.start_time,
+  sa.end_time
+
+FROM services s
+
+LEFT JOIN service_availability sa
+ON sa.service_id = s.id
+
+WHERE s.id = ?
+LIMIT 1
+        `,
+        [id]
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({
+          ok: false,
+          message: "Service introuvable",
+        });
+      }
+const item = rows[0];
+
+item.availabilityStart = item.start_time;
+item.availabilityEnd = item.end_time;
 
       return res.json({
         ok: true,
-        count: items.length,
-        nextCursor,
-        items
+        item
       });
 
     } catch (err) {
-      console.error('GET /customers/services error:', err);
-      return res.status(500).json({ ok: false, message: 'Erreur serveur', details: String(err) });
+
+      console.error("DETAIL ERROR", err);
+      return res.status(500).json({ ok: false });
+
     }
-  }
-);
 
-/* ============================================================================
-   GET /customers/services/:id — DÉTAIL D’UN SERVICE
-============================================================================ */
-router.get(
-  '/:id',
-  authGuard,
-  async (req, res) => {
-    try {
-      const id = req.params.id;
-
-      console.log("🔥 DETAIL REQ — ID =", id);
-
-      const doc = await db.collection('services').doc(id).get();
-      if (!doc.exists)
-        return res.status(404).json({ ok: false, message: 'Service introuvable' });
-
-      const raw = doc.data() || {};
-
-      const startTime =
-        raw.startTime ||
-        raw.Availability?.startTime ||
-        null;
-
-      const endTime =
-        raw.endTime ||
-        raw.Availability?.endTime ||
-        null;
-
-      const instances =
-        raw.Availability?.instances ??
-        raw.instances ??
-        raw.instancesTotal ??
-        raw.places ??
-        1;
-
-      const Availability = {
-        startTime,
-        endTime,
-        instances: Number(instances)
-      };
-
-      const weekly =
-        raw.weekly ||
-        raw.Weekly ||
-        raw.availability_weekly ||
-        null;
-
-      const Pricing = {
-        currency: raw.Pricing?.currency || "CAD",
-        price: raw.Fee ?? raw.price ?? null,
-      };
-
-      const partner = raw.partner || raw.partnerInfo || null;
-
-      const payload = {
-        id: doc.id,
-        Service: raw.Service || raw.title || "Service",
-        Description: raw.Description || raw.desc || "",
-        Activity_Secteur: raw.Activity_Secteur || raw.secteur || null,
-        Fee: raw.Fee ?? raw.price ?? null,
-        coverUrl: raw.coverUrl || raw.cover || null,
-        images: raw.images || [],
-        move: raw.Location_Fixe_Move || raw.move || null,
-        Availability,
-        weekly,
-        Pricing,
-        partner,
-        location: raw.location || raw.position || raw.coords || null,
-        instancesTotal: Number(instances),
-        legacy: {
-          rawAvailability: raw.Availability || null,
-          rawWeekly: raw.weekly || raw.Weekly || null,
-        },
-        createdAt: raw.createdAt || null,
-        updatedAt: raw.updatedAt || null,
-      };
-
-      console.log("🔥 DETAIL PAYLOAD NORMALIZED →", payload);
-
-      return res.json(payload);
-
-    } catch (err) {
-      console.error("GET /customers/services/:id ERROR", err);
-      return res.status(500).json({ ok: false, message: 'Erreur serveur' });
-    }
   }
 );
 

@@ -3,19 +3,17 @@ import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
-  ActivityIndicator,
   ScrollView,
-  Alert,
   Image,
+  ActivityIndicator,
+  Alert,
+  Platform,
 } from "react-native";
-import Ionicons from "@expo/vector-icons/Ionicons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
 
 const PALETTE = {
   bg: "#0A0F2C",
-  card: "#132042",
+  card: "rgba(255,255,255,0.08)",
   gold: "#FFD700",
   white: "#FFFFFF",
   light: "#CCCCCC",
@@ -23,43 +21,46 @@ const PALETTE = {
 };
 
 export default function InfoProfileScreen() {
-  const router = useRouter();
-
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState({
-    nom: "",
     prenom: "",
+    nom: "",
     email: "",
-    user: "",
   });
 
   /* -------------------------------------------------------
-     FETCH USER FROM BACKEND
+     FETCH USER PROFILE (DYNAMIQUE)
   ------------------------------------------------------- */
   const fetchUser = async () => {
     try {
-      const token = await AsyncStorage.getItem("idToken");
+      const token =
+        (await AsyncStorage.getItem("idToken")) ||
+        (typeof window !== "undefined"
+          ? localStorage.getItem("idToken")
+          : null);
+
       if (!token) return;
 
       const res = await fetch(
         `${process.env.EXPO_PUBLIC_API_BASE}/customers/profile`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
       );
 
       const data = await res.json();
-      if (!data.ok) {
+
+      if (!res.ok || !data.ok) {
         Alert.alert("Erreur", "Impossible de charger le profil.");
         return;
       }
 
       setUser({
-        nom: data.user.nom || "",
-        prenom: data.user.prenom || "",
-        email: data.user.email || "",
-        user: data.user.user || "",
+        prenom: data.user.prenom ?? "",
+        nom: data.user.nom ?? "",
+        email: data.user.email ?? "",
       });
-    } catch (err) {
-      console.log("ERR fetch profile:", err);
+    } catch {
       Alert.alert("Erreur", "Problème réseau.");
     } finally {
       setLoading(false);
@@ -71,29 +72,22 @@ export default function InfoProfileScreen() {
   }, []);
 
   /* -------------------------------------------------------
-     REUSABLE ROW COMPONENT
-  ------------------------------------------------------- */
-  const Row = ({ label, value }) => (
-    <View style={styles.row}>
-      <Text style={styles.label}>{label}</Text>
-      <Text style={styles.value}>{value || "-"}</Text>
-    </View>
-  );
-
-  /* -------------------------------------------------------
-     LOADING VIEW
+     LOADING UI
   ------------------------------------------------------- */
   if (loading) {
     return (
       <View style={[styles.container, { justifyContent: "center" }]}>
-        <ActivityIndicator size="large" color={PALETTE.gold} />
+        <ActivityIndicator color={PALETTE.gold} size="large" />
       </View>
     );
   }
 
+  /* -------------------------------------------------------
+     UI
+  ------------------------------------------------------- */
   return (
     <ScrollView style={styles.container}>
-      {/* ---- HEADER ---- */}
+      {/* HEADER */}
       <View style={styles.headerBlock}>
         <Image
           source={require("../../../assets/images/avatar.png")}
@@ -103,36 +97,36 @@ export default function InfoProfileScreen() {
         <Text style={styles.emailText}>{user.email}</Text>
       </View>
 
-      {/* ---- CARD INFO ---- */}
+      {/* CARD */}
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Informations personnelles</Text>
+        <Text style={styles.title}>Informations personnelles</Text>
 
-        <Row label="Prénom" value={user.prenom} />
+        <View style={styles.row}>
+          <Text style={styles.label}>Prénom</Text>
+          <Text style={styles.value}>{user.prenom}</Text>
+        </View>
+
         <View style={styles.divider} />
 
-        <Row label="Nom" value={user.nom} />
+        <View style={styles.row}>
+          <Text style={styles.label}>Nom</Text>
+          <Text style={styles.value}>{user.nom}</Text>
+        </View>
+
         <View style={styles.divider} />
 
-        <Row label="Email" value={user.email} />
-        <View style={styles.divider} />
-
-        <Row label="Nom d'utilisateur" value={user.user} />
+        <View style={styles.row}>
+          <Text style={styles.label}>Email</Text>
+          <Text style={styles.value}>{user.email}</Text>
+        </View>
       </View>
-
-      {/* ---- BOUTON MODIFIER ---- */}
-      <TouchableOpacity
-        style={styles.editBtn}
-        onPress={() => router.push("/profile/edit")}
-      >
-        <Ionicons name="create-outline" size={20} color="#000" />
-        <Text style={styles.editText}>Modifier</Text>
-      </TouchableOpacity>
     </ScrollView>
   );
 }
 
-/* ---------------------------- STYLES ---------------------------- */
-
+/* -------------------------------------------------------
+   STYLES
+------------------------------------------------------- */
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -140,7 +134,6 @@ const styles = StyleSheet.create({
     padding: 20,
   },
 
-  /* HEADER */
   headerBlock: {
     alignItems: "center",
     marginBottom: 25,
@@ -149,7 +142,7 @@ const styles = StyleSheet.create({
   avatar: {
     width: 110,
     height: 110,
-    borderRadius: 80,
+    borderRadius: Platform.OS === "web" ? "50%" : 80,
     marginBottom: 12,
   },
 
@@ -161,27 +154,25 @@ const styles = StyleSheet.create({
 
   emailText: {
     color: PALETTE.light,
-    marginTop: 4,
     fontSize: 14,
+    marginTop: 4,
   },
 
-  /* CARD */
   card: {
     backgroundColor: PALETTE.card,
     padding: 20,
     borderRadius: 18,
-    marginBottom: 30,
   },
 
-  sectionTitle: {
+  title: {
     color: PALETTE.gold,
     fontSize: 18,
     fontWeight: "800",
-    marginBottom: 18,
+    marginBottom: 20,
   },
 
   row: {
-    marginBottom: 16,
+    marginBottom: 14,
   },
 
   label: {
@@ -199,22 +190,6 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: PALETTE.divider,
-    marginBottom: 16,
-  },
-
-  /* EDIT BUTTON */
-  editBtn: {
-    backgroundColor: PALETTE.gold,
-    padding: 15,
-    borderRadius: 12,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  editText: {
-    marginLeft: 8,
-    fontSize: 18,
-    fontWeight: "700",
+    marginVertical: 12,
   },
 });

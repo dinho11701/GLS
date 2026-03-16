@@ -1,291 +1,354 @@
-// routes/customers/reservations.js
+//routes/customers/reservation.js
 const express = require("express");
 const { body, validationResult } = require("express-validator");
-const { db } = require("../../config/firebase");
-const authGuard = require("../../middleware/authGuard");
 const { DateTime } = require("luxon");
-const { checkAvailability } = require("../../utils/checkAvailability");
+const { v4: generateUUID } = require("uuid");
+const authGuard = require("../../middleware/authGuard");
+const dbPool = require("../../config/mysql");
 
 const router = express.Router();
-const TZ = "America/Toronto";
+const BUSINESS_TIMEZONE = "America/Toronto";
 
-/* ---------- HELPERS ---------- */
-function toHttpError(errors) {
-  return {
-    errors: errors.array().map((e) => ({ field: e.path, msg: e.msg })),
-  };
+/* ============================================================
+   HELPERS
+============================================================ */
+
+function formatValidationErrors(errors) {
+  return errors.array().map((e) => ({
+    field: e.path,
+    message: e.msg,
+  }));
 }
 
-function buildCalendarDim(dateObj, tz = TZ, time = null) {
-  const dt = DateTime.fromJSDate(dateObj, { zone: tz });
+/* ============================================================
+   CREATE RESERVATION
+============================================================ */
 
-  return {
-    date_id: Number(dt.toFormat("yyyyLLdd")),
-    date: dt.toFormat("yyyy-LL-dd"),
-    day: dt.day,
-    day_txt: dt.toFormat("ccc"),
-    week: Number(dt.toFormat("W")),
-    month: dt.month,
-    month_txt: dt.toFormat("LLL"),
-    year: dt.year,
-    time: time || dt.toFormat("HH:mm"),
-  };
-}
-
-/* ============================================================================
-   POST /customers/reservations — CREATE
-============================================================================ */
 router.post(
   "/",
   authGuard,
   [
-    body("serviceId").notEmpty().withMessage("serviceId requis"),
-    body("date").isString().withMessage("date requise"),
-    body("startTime").isString().withMessage("startTime requis"),
-    body("endTime").isString().withMessage("endTime requis"),
+    body("serviceId").isInt(),
+    body("date").isISO8601(),
+    body("startTime").notEmpty(),
+    body("endTime").notEmpty(),
   ],
   async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json(toHttpError(errors));
+    const validationErrors = validationResult(req);
+    if (!validationErrors.isEmpty()) {
+      return res.status(400).json({
+        errors: formatValidationErrors(validationErrors),
+      });
+    }
+
+    const connection = await dbPool.getConnection();
 
     try {
+      await connection.beginTransaction();
+
+      const customerId = req.user.id;
       const { serviceId, date, startTime, endTime } = req.body;
-      const customerId = req.user.uid;
 
-      const svcDoc = await db.collection("services").doc(serviceId).get();
-      if (!svcDoc.exists)
-        return res.status(404).json({ error: "Service introuvable" });
+      /* 1️⃣ Fetch service */
+      const [serviceRows] = await connection.query(
+        `
+        SELECT 
+          s.id,
+          s.owner_id,
+          s.name,
+          s.base_price,
+          s.currency_id
+        FROM services s
+        WHERE s.id = ?
+        `,
+        [serviceId]
+      );
 
-      const svc = svcDoc.data();
-      const partnerUid = svc.ownerUid;
-
-      if (!partnerUid)
-        return res.status(400).json({ error: "Service sans partenaire" });
-
-      /* Check availability */
-      const available = await checkAvailability({
-        partnerUid,
-        serviceId,
-        date,
-        startTime,
-        endTime,
-      });
-
-      if (!available.ok) {
-        return res.status(409).json({ error: available.reason });
+      if (!serviceRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Service not found" });
       }
 
-      const durationMin = available.durationMin;
+      const service = serviceRows[0];
 
-      const startDt = DateTime.fromISO(`${date}T${startTime}`, { zone: TZ });
-      const endDt = DateTime.fromISO(`${date}T${endTime}`, { zone: TZ });
+      /* 2️⃣ Compute datetime */
+      const startDateTime = DateTime.fromISO(
+        `${date}T${startTime}`,
+        { zone: BUSINESS_TIMEZONE }
+      );
 
-      const ref = db.collection("reservations").doc();
-      const now = new Date();
-      const calendar = buildCalendarDim(startDt.toJSDate(), TZ, startTime);
+      const endDateTime = DateTime.fromISO(
+        `${date}T${endTime}`,
+        { zone: BUSINESS_TIMEZONE }
+      );
 
-      await ref.set({
-        reservationId: ref.id,
-        customerId,
-        serviceId,
-        partnerUid,
-        status: "pending",
-        tz: TZ,
+      const durationMinutes = Math.floor(
+        endDateTime.diff(startDateTime, "minutes").minutes
+      );
 
-        startAt: startDt.toUTC().toJSDate(),
-        endAt: endDt.toUTC().toJSDate(),
-        durationMin,
+      /* 3️⃣ Compute taxes */
+      const [taxRows] = await connection.query(
+        `SELECT rate FROM tax_rates WHERE is_active = TRUE`
+      );
 
-        price: svc.Fee ?? null,
-        currency: svc.Pricing?.currency || "CAD",
+      const baseAmount = Number(service.base_price);
 
-        calendar,
-        createdAt: now,
-        updatedAt: now,
+      const totalTaxRate = taxRows.reduce(
+        (sum, tax) => sum + Number(tax.rate),
+        0
+      );
+
+      const taxAmount = Number((baseAmount * totalTaxRate).toFixed(2));
+      const totalAmount = Number((baseAmount + taxAmount).toFixed(2));
+
+      /* 4️⃣ Status pending */
+      const [statusRows] = await connection.query(
+        `SELECT id FROM reservation_statuses WHERE code = 'pending' LIMIT 1`
+      );
+
+      const pendingStatusId = statusRows[0].id;
+
+      const reservationUUID = generateUUID();
+
+      /* 5️⃣ Insert reservation */
+      await connection.query(
+        `
+        INSERT INTO reservations (
+          reservation_uuid,
+          customer_id,
+          partner_id,
+          service_id,
+          status_id,
+          currency_id,
+          base_amount,
+          tax_amount,
+          total_amount,
+          timezone,
+          start_at,
+          end_at,
+          duration_minutes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          reservationUUID,
+          customerId,
+          service.owner_id,
+          service.id,
+          pendingStatusId,
+          service.currency_id,
+          baseAmount,
+          taxAmount,
+          totalAmount,
+          BUSINESS_TIMEZONE,
+          startDateTime.toSQL(),
+          endDateTime.toSQL(),
+          durationMinutes,
+        ]
+      );
+
+      /* 6️⃣ Create notification */
+      await connection.query(
+        `
+        INSERT INTO notifications (
+          user_id,
+          user_type,
+          type,
+          title,
+          message,
+          reference_id
+        )
+        VALUES (?, 'customer', ?, ?, ?, ?)
+        `,
+        [
+          customerId,
+          "reservation_created",
+          "Réservation confirmée",
+          `Votre réservation pour "${service.name}" est enregistrée.`,
+          reservationUUID,
+        ]
+      );
+
+      await connection.commit();
+
+      return res.status(201).json({
+        reservationId: reservationUUID,
+        pricing: {
+          baseAmount,
+          taxAmount,
+          totalAmount,
+        },
       });
-
-	
-      /* ---------------------------------------------------------
-   ⭐ AJOUT NOTIFICATION CÔTÉ CLIENT
---------------------------------------------------------- */
-try {
-  await db
-    .collection("customers")
-    .doc(customerId)
-    .collection("notifs")
-    .doc() // auto-ID
-    .set({
-      type: "reservation",
-      title: "Réservation confirmée",
-      body: `Votre réservation pour "${svc.Service}" est bien enregistrée.`,
-      data: { reservationId: ref.id },
-      status: "unread",
-      createdAt: new Date(),
-      readAt: null,
-    });
-} catch (notifErr) {
-  console.error("[RESERVATION → NOTIF ERROR]", notifErr);
-}
-
-
-
-      return res.status(201).json({ reservationId: ref.id });
-    } catch (err) {
-      console.error("[RESERVATION ERROR]", err);
-      return res.status(500).json({ error: "Erreur serveur" });
+    } catch (error) {
+      await connection.rollback();
+      console.error("[CREATE RESERVATION ERROR]", error);
+      return res.status(500).json({ error: "Server error" });
+    } finally {
+      connection.release();
     }
   }
 );
 
-/* ============================================================================
-   GET /customers/reservations → LIST
-============================================================================ */
+/* ============================================================
+   LIST CUSTOMER RESERVATIONS
+============================================================ */
+
 router.get("/", authGuard, async (req, res) => {
   try {
-    const customerId = req.user.uid;
+    const customerId = req.user.id;
 
-    const snap = await db
-      .collection("reservations")
-      .where("customerId", "==", customerId)
-      .orderBy("calendar.date_id", "desc")
-      .get();
+    const [rows] = await dbPool.query(
+      `
+      SELECT 
+        r.reservation_uuid,
+        rs.code AS status,
+        r.start_at,
+        r.end_at,
+        r.base_amount,
+        r.tax_amount,
+        r.total_amount,
+        c.code AS currency_code,
+        s.name AS service_name
+      FROM reservations r
+      JOIN reservation_statuses rs ON r.status_id = rs.id
+      JOIN currencies c ON r.currency_id = c.id
+      JOIN services s ON r.service_id = s.id
+      WHERE r.customer_id = ?
+      ORDER BY r.start_at DESC
+      `,
+      [customerId]
+    );
 
-    const out = [];
-
-    for (const doc of snap.docs) {
-      const r = doc.data();
-
-      let autoDate = null;
-      let autoTime = null;
-
-      if (r.startAt) {
-        const js = r.startAt.toDate ? r.startAt.toDate() : new Date(r.startAt);
-        autoDate = js.toISOString().substring(0, 10);
-        autoTime = js.toISOString().substring(11, 16);
-      }
-
-      let serviceName = "";
-      let coverUrl = null;
-
-      try {
-        const s = await db.collection("services").doc(r.serviceId).get();
-        if (s.exists) {
-          const data = s.data();
-          serviceName = data.Service || "";
-          coverUrl = data.coverUrl || null;
-        }
-      } catch {}
-
-      out.push({
-        reservationId: r.reservationId,
-        serviceName,
-        coverUrl,
-        status: r.status,
-        date: r.calendar?.date || autoDate,
-        time: r.calendar?.time || autoTime,
-        startAt: r.startAt,
-        endAt: r.endAt,
-        price: r.price,
-        currency: r.currency,
-      });
-    }
-
-    return res.status(200).json(out);
-  } catch (err) {
-    console.error("[GET RESERVATIONS ERROR]", err);
-    return res.status(500).json({ error: "Erreur serveur" });
+    return res.json(rows);
+  } catch (error) {
+    console.error("[LIST RESERVATIONS ERROR]", error);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ============================================================================
-   GET /customers/reservations/:id → DETAIL
-============================================================================ */
-router.get("/:id", authGuard, async (req, res) => {
+/* ============================================================
+   GET RESERVATION DETAIL
+============================================================ */
+
+router.get("/:uuid", authGuard, async (req, res) => {
   try {
-    const customerId = req.user.uid;
-    const reservationId = req.params.id;
+    const customerId = req.user.id;
+    const reservationUUID = req.params.uuid;
 
-    const snap = await db.collection("reservations").doc(reservationId).get();
-    if (!snap.exists)
-      return res.status(404).json({ ok: false, error: "Reservation not found" });
+    const [rows] = await dbPool.query(
+      `
+      SELECT 
+        r.*,
+        rs.code AS status,
+        c.code AS currency_code,
+        s.name AS service_name
+      FROM reservations r
+      JOIN reservation_statuses rs ON r.status_id = rs.id
+      JOIN currencies c ON r.currency_id = c.id
+      JOIN services s ON r.service_id = s.id
+      WHERE r.reservation_uuid = ?
+      `,
+      [reservationUUID]
+    );
 
-    const r = snap.data();
-
-    if (r.customerId !== customerId)
-      return res.status(403).json({ ok: false, error: "Forbidden" });
-
-    let autoDate = null;
-    let autoTime = null;
-
-    if (r.startAt) {
-      const js = r.startAt.toDate ? r.startAt.toDate() : new Date(r.startAt);
-      autoDate = js.toISOString().substring(0, 10);
-      autoTime = js.toISOString().substring(11, 16);
-    }
-
-    let serviceName = "";
-    let coverUrl = null;
-
-    try {
-      const s = await db.collection("services").doc(r.serviceId).get();
-      if (s.exists) {
-        const data = s.data();
-        serviceName = data.Service || "";
-        coverUrl = data.coverUrl || null;
-      }
-    } catch {}
-
-    return res.json({
-      reservationId: r.reservationId,
-      serviceName,
-      coverUrl,
-      status: r.status,
-      date: r.calendar?.date || autoDate,
-      time: r.calendar?.time || autoTime,
-      startAt: r.startAt,
-      endAt: r.endAt,
-      price: r.price,
-      currency: r.currency,
-      partnerUid: r.partnerUid,
-    });
-  } catch (err) {
-    console.error("[GET RESERVATION DETAIL ERROR]", err);
-    return res.status(500).json({ ok: false, error: "Server error" });
-  }
-});
-
-/* ============================================================================
-   DELETE /customers/reservations/:id → CANCEL
-============================================================================ */
-router.delete("/:id", authGuard, async (req, res) => {
-  try {
-    const customerId = req.user.uid;
-    const reservationId = req.params.id;
-
-    const ref = db.collection("reservations").doc(reservationId);
-    const snap = await ref.get();
-
-    if (!snap.exists)
+    if (!rows.length) {
       return res.status(404).json({ error: "Reservation not found" });
-
-    const r = snap.data();
-
-    if (r.customerId !== customerId)
-      return res.status(403).json({ error: "Forbidden" });
-
-    if (r.status === "cancelled") {
-      return res.status(200).json({ ok: true, message: "Déjà annulée" });
     }
 
-    await ref.update({
-      status: "cancelled",
-      updatedAt: new Date(),
-    });
+    const reservation = rows[0];
 
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error("[DELETE RESERVATION ERROR]", err);
-    return res.status(500).json({ error: "Erreur serveur" });
+    if (reservation.customer_id !== customerId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    return res.json(reservation);
+  } catch (error) {
+    console.error("[GET RESERVATION ERROR]", error);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* ============================================================
+   CANCEL RESERVATION
+============================================================ */
+
+router.delete("/:uuid", authGuard, async (req, res) => {
+  const connection = await dbPool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const customerId = req.user.id;
+    const reservationUUID = req.params.uuid;
+
+    const [rows] = await connection.query(
+      `
+      SELECT id, customer_id, status_id
+      FROM reservations
+      WHERE reservation_uuid = ?
+      `,
+      [reservationUUID]
+    );
+
+    if (!rows.length) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    const reservation = rows[0];
+
+    if (reservation.customer_id !== customerId) {
+      await connection.rollback();
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    /* Get cancelled status id */
+    const [statusRows] = await connection.query(
+      `SELECT id FROM reservation_statuses WHERE code = 'cancelled' LIMIT 1`
+    );
+
+    const cancelledStatusId = statusRows[0].id;
+
+    await connection.query(
+      `
+      UPDATE reservations
+      SET status_id = ?, updated_at = NOW()
+      WHERE reservation_uuid = ?
+      `,
+      [cancelledStatusId, reservationUUID]
+    );
+
+    /* Notification */
+    await connection.query(
+      `
+      INSERT INTO notifications (
+        user_id,
+        user_type,
+        type,
+        title,
+        message,
+        reference_id
+      )
+      VALUES (?, 'customer', ?, ?, ?, ?)
+      `,
+      [
+        customerId,
+        "reservation_cancelled",
+        "Réservation annulée",
+        "Votre réservation a été annulée.",
+        reservationUUID,
+      ]
+    );
+
+    await connection.commit();
+
+    return res.json({ ok: true });
+  } catch (error) {
+    await connection.rollback();
+    console.error("[CANCEL RESERVATION ERROR]", error);
+    return res.status(500).json({ error: "Server error" });
+  } finally {
+    connection.release();
   }
 });
 

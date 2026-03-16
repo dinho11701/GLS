@@ -1,0 +1,13 @@
+@import "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+
+
+html, body {
+  height: 100%;
+  overflow-y: auto !important;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;       /* OBLIGATOIRE POUR EXPO */
+  flex-direction: column;
+}

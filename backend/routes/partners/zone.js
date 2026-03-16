@@ -1,88 +1,88 @@
-// backend/routes/partners/zone.js
-const express = require('express');
-const { db } = require('../../config/firebase');
+const express = require("express");
+const pool = require("../../config/mysql");
 
 const router = express.Router();
 
 /**
- * GET /api/v1/partners/zone
- * Retourne la zone du partenaire courant (req.user.uid)
+ * GET zone
  */
-router.get('/', async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const uid = req.user?.uid;
-    if (!uid) {
-      return res.status(400).json({ ok: false, error: 'missing_uid' });
+    console.log("🔥 GET /partners/zone");
+
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
-    const snap = await db.collection('partnerZones').doc(uid).get();
-    if (!snap.exists) {
-      return res.status(404).json({
-        ok: false,
-        error: 'zone_not_found',
-        message: "Aucune zone définie pour ce partenaire.",
-      });
+    const partnerId = req.user.id;
+    console.log("👉 Partner ID:", partnerId);
+
+    const [rows] = await pool.query(
+      "SELECT * FROM partner_zones WHERE partner_id = ?",
+      [partnerId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "zone_not_found" });
     }
 
-    const data = snap.data();
-    // On renvoie les champs comme attendus par le front (center, radiusKm, available, address, partnerId, updatedAt)
-    return res.json({ ok: true, ...data });
+    return res.json({ ok: true, zone: rows[0] });
+
   } catch (err) {
-    console.error('[ZONE] GET error', err);
-    return res.status(500).json({ ok: false, error: 'internal_error' });
+    console.error("GET zone error:", err);
+    return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
 /**
- * POST /api/v1/partners/zone
- * Body: { center: {latitude, longitude}, radiusKm, available, address }
+ * POST zone
  */
-router.post('/', async (req, res) => {
+router.post("/", async (req, res) => {
   try {
-    const uid = req.user?.uid;
-    if (!uid) {
-      return res.status(400).json({ ok: false, error: 'missing_uid' });
+    console.log("🔥 POST /partners/zone");
+    console.log("👉 BODY:", req.body);
+    console.log("REQ.USER:", req.user);
+
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
     }
 
-    const {
-      center,
-      radiusKm = 5,
-      available = true,
-      address = '',
-    } = req.body || {};
+    const partnerId = req.user.id;
+    const { center, radiusKm, available } = req.body;
 
-    if (
-      !center ||
-      typeof center.latitude !== 'number' ||
-      typeof center.longitude !== 'number'
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: 'invalid_center',
-        message: 'center.latitude et center.longitude sont requis.',
-      });
+    if (!center?.latitude || !center?.longitude) {
+      return res.status(400).json({ ok: false, error: "invalid_center" });
     }
 
-    const payload = {
-      partnerId: uid,
-      center: {
-        latitude: center.latitude,
-        longitude: center.longitude,
-      },
-      radiusKm: Number(radiusKm) || 5,
-      available: Boolean(available),
-      address: String(address || ''),
-      updatedAt: new Date().toISOString(),
-    };
+    console.log("👉 Saving zone for partner:", partnerId);
 
-    console.log('[ZONE] upsert for partner', uid, payload);
+    await pool.query(
+      `
+      INSERT INTO partner_zones 
+        (partner_id, latitude, longitude, radius_km, available)
+      VALUES (?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        latitude = VALUES(latitude),
+        longitude = VALUES(longitude),
+        radius_km = VALUES(radius_km),
+        available = VALUES(available)
+      `,
+      [
+        partnerId,
+        center.latitude,
+        center.longitude,
+        radiusKm || 5,
+        available ?? true,
+      ]
+    );
 
-    await db.collection('partnerZones').doc(uid).set(payload, { merge: true });
+    console.log("✅ Zone saved");
 
-    return res.json({ ok: true, ...payload });
+    return res.json({ ok: true });
+
   } catch (err) {
-    console.error('[ZONE] POST error', err);
-    return res.status(500).json({ ok: false, error: 'internal_error' });
+    console.error("POST zone error:", err);
+    return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 

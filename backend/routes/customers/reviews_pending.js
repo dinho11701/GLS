@@ -1,4 +1,3 @@
-// backend/routes/customers/reviews_pending.js
 const express = require("express");
 const { db } = require("../../config/firebase");
 const authGuard = require("../../middleware/authGuard");
@@ -6,27 +5,53 @@ const authGuard = require("../../middleware/authGuard");
 const router = express.Router();
 
 router.get("/", authGuard, async (req, res) => {
-  try {
-    const uid = req.user.uid;
+  const uid = req.user.uid;
 
+  try {
     const snap = await db
       .collection("reservations")
-      .where("customerUid", "==", uid)
+      .where("customerId", "==", uid)
       .where("review.needsReview", "==", true)
-      .limit(1)
+      .limit(5)
       .get();
 
-    const items = snap.docs.map(d => ({
-      reservationId: d.id,
-      serviceId: d.data().serviceId,
-      serviceName: d.data().serviceName,
-      ...d.data(),
-    }));
+    // ⭐⭐⭐ LIGNE CRUCIALE — À NE JAMAIS ENLEVER ⭐⭐⭐
+    res.set("Cache-Control", "no-store");
 
-    return res.json({ ok: true, items });
+    if (snap.empty) {
+      return res.json({ ok: true, item: null });
+    }
+
+    // 🔎 on prend la PREMIÈRE réservation valide
+    for (const doc of snap.docs) {
+      const data = doc.data();
+
+      if (!data.serviceDocId) {
+        console.warn(
+          `⚠️ Reservation ${doc.id} ignorée (serviceDocId manquant)`
+        );
+        continue; // skip legacy
+      }
+
+      return res.json({
+        ok: true,
+        item: {
+          reservationId: doc.id,
+          serviceDocId: data.serviceDocId,
+          serviceName: data.serviceTitle || null,
+        },
+      });
+    }
+
+    // aucune réservation exploitable
+    return res.json({ ok: true, item: null });
+
   } catch (err) {
-    console.error("PENDING REVIEW ERROR", err);
-    return res.status(500).json({ ok: false });
+    console.error("[REVIEWS_PENDING]", err);
+
+    // ⭐ aussi ici, pour éviter cache d’erreur
+    res.set("Cache-Control", "no-store");
+    return res.json({ ok: true, item: null });
   }
 });
 
