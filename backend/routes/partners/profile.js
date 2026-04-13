@@ -1,111 +1,143 @@
 // backend/routes/partners/profile.js
-const express = require('express');
-const { body, validationResult } = require('express-validator');
-const { db } = require('../../config/firebase');        // <-- adapte le chemin si besoin
-const authGuard = require('../../middleware/authGuard'); // <-- vérifie le Bearer ID token
+
+const express = require("express");
+const { body, validationResult } = require("express-validator");
+const authGuard = require("../../middleware/authGuard");
+const pool = require("../../config/mysql");
 
 const router = express.Router();
 
-/**
- * Schéma de données attendu (exemple)
- * {
- *   partenaire_ID: "HV-010",
- *   nom: "PowerCity",
- *   secteur: "Énergie",
- *   numeroPhone: "+1 438 111 2222",
- *   adresse: "1010 St Urbain, Montréal, QC",
- *   mail: "ops@powercity.ca",
- *   logo: "https://cdn.example/powercity.png",
- *   nomOwner: "Nadia D.",
- *   user: "powercity_admin"
- * }
- */
+/* ---------------------------------------------------- */
+/* GET PROFILE */
+/* ---------------------------------------------------- */
 
-// -------- GET /api/v1/partners/profile --------
-router.get('/profile', authGuard, async (req, res) => {
+router.get("/profile", authGuard, async (req, res) => {
   try {
-    const uid = req.user.uid; // mis par authGuard après vérif ID token
-    const ref = db.collection('partners').doc(uid);
-    const snap = await ref.get();
+    const userId = req.user.id;
 
-    if (!snap.exists) {
+    const [rows] = await pool.query(
+      `SELECT * FROM partners WHERE id = ? LIMIT 1`,
+      [userId]
+    );
+
+    if (!rows.length) {
       return res.status(404).json({
         ok: false,
-        error: 'PROFILE_NOT_FOUND',
-        message: 'Aucun profil partenaire pour cet utilisateur.',
+        error: "PROFILE_NOT_FOUND",
+        message: "Aucun profil partenaire trouvé.",
       });
     }
 
-    return res.json({ ok: true, item: snap.data() });
+    return res.json({
+      ok: true,
+      item: rows[0],
+    });
+
   } catch (err) {
-    console.error('GET partners/profile error:', err);
+    console.error("GET partners/profile error:", err);
+
     return res.status(500).json({
       ok: false,
-      error: 'INTERNAL_ERROR',
-      message: 'Erreur serveur lors de la récupération du profil.',
+      error: "INTERNAL_ERROR",
+      message: "Erreur serveur.",
     });
   }
 });
 
-// -------- PUT /api/v1/partners/profile --------
-// Remplace/crée le profil complet (idempotent)
+/* ---------------------------------------------------- */
+/* UPDATE PROFILE */
+/* ---------------------------------------------------- */
+
 router.put(
-  '/profile',
+  "/profile",
   authGuard,
   [
-    body('partenaire_ID').optional().isString().trim().isLength({ min: 2 }),
-    body('nom').isString().trim().isLength({ min: 2 }).withMessage('nom requis'),
-    body('secteur').optional().isString().trim(),
-    body('numeroPhone').optional().isString().trim().isLength({ min: 5 }),
-    body('adresse').optional().isString().trim().isLength({ min: 5 }),
-    body('mail').optional().isEmail().withMessage('mail invalide').bail().normalizeEmail(),
-    body('logo').optional().isURL().withMessage('logo doit être une URL valide'),
-    body('nomOwner').optional().isString().trim().isLength({ min: 2 }),
-    body('user').optional().isString().trim().isLength({ min: 2 }),
+    body("nom").isString().trim().isLength({ min: 2 }),
+    body("secteur").optional().isString(),
+    body("numero_phone").optional().isString(),
+    body("adresse").optional().isString(),
+    body("email").optional().isEmail(),
+    body("logo").optional().isString(),
+    body("nom_owner").optional().isString(),
+    body("user").optional().isString(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
+
     if (!errors.isEmpty()) {
-      return res.status(422).json({ ok: false, error: 'VALIDATION_ERROR', details: errors.array() });
+      return res.status(422).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: errors.array(),
+      });
     }
 
     try {
-      const uid = req.user.uid;
-      const ref = db.collection('partners').doc(uid);
-      const now = new Date();
+      const userId = req.user.id;
 
-      // construit le champ "searchable" pour la recherche plein texte rudimentaire
-      const fields = [
-        'partenaire_ID', 'nom', 'secteur', 'numeroPhone', 'adresse',
-        'mail', 'nomOwner', 'user',
-      ];
+      const {
+        nom,
+        secteur,
+        numero_phone,
+        adresse,
+        email,
+        logo,
+        nom_owner,
+        user,
+      } = req.body;
 
-      const searchable = fields
-        .map((f) => (req.body[f] ? String(req.body[f]).toLowerCase() : ''))
-        .join(' ');
+      /* ------------------------------------------------ */
+      /* UPDATE QUERY                                     */
+      /* ------------------------------------------------ */
 
-      // on remplace tout le document (PUT = remplace)
-      await db.runTransaction(async (t) => {
-        const snap = await t.get(ref);
-        const base = {
-          ...req.body,
-          searchable,
-          updatedAt: now,
-        };
-        if (!snap.exists) {
-          base.createdAt = now;
-        }
-        t.set(ref, base, { merge: false }); // PUT = pas merge
+      await pool.query(
+        `
+        UPDATE partners
+        SET
+          nom = ?,
+          secteur = ?,
+          numero_phone = ?,
+          adresse = ?,
+          email = ?,
+          logo = ?,
+          nom_owner = ?,
+          user = ?
+        WHERE id = ?
+        `,
+        [
+          nom,
+          secteur || null,
+          numero_phone || null,
+          adresse || null,
+          email || null,
+          logo || null,
+          nom_owner || null,
+          user || null,
+          userId,
+        ]
+      );
+
+      /* ------------------------------------------------ */
+      /* RETURN UPDATED                                  */
+      /* ------------------------------------------------ */
+
+      const [rows] = await pool.query(
+        `SELECT * FROM partners WHERE id = ? LIMIT 1`,
+        [userId]
+      );
+
+      return res.json({
+        ok: true,
+        item: rows[0],
       });
 
-      const updated = await ref.get();
-      return res.status(200).json({ ok: true, item: updated.data() });
     } catch (err) {
-      console.error('PUT partners/profile error:', err);
+      console.error("PUT partners/profile error:", err);
+
       return res.status(500).json({
         ok: false,
-        error: 'INTERNAL_ERROR',
-        message: 'Erreur serveur lors de la mise à jour du profil.',
+        error: "INTERNAL_ERROR",
+        message: "Erreur serveur lors de la mise à jour.",
       });
     }
   }

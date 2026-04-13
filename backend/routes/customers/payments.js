@@ -10,6 +10,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_missing", {
   apiVersion: "2024-06-20",
 });
 
+
 /* ---------------------------------------------------- */
 
 function handleValidation(req, res) {
@@ -70,6 +71,32 @@ router.post(
       const taxAmount = 0;
       const totalAmount = baseAmount + taxAmount;
 
+/* ------------------------------------------------ */
+/* GET CURRENCY ID                                  */
+/* ------------------------------------------------ */
+
+const [currencyRows] = await pool.query(
+  `SELECT id FROM currencies WHERE code = ? LIMIT 1`,
+  [currency.toUpperCase()]
+);
+
+if (!currencyRows.length) {
+  return res.status(400).json({ error: "Currency not supported" });
+}
+
+const currencyId = currencyRows[0].id;
+
+
+const [statusRows] = await pool.query(
+  `SELECT id FROM reservation_statuses WHERE code = 'pending' LIMIT 1`
+);
+
+if (!statusRows.length) {
+  return res.status(500).json({ error: "Missing reservation status" });
+}
+
+const statusId = statusRows[0].id;
+
       /* ------------------------------------------------ */
       /* CREATE RESERVATION                               */
       /* ------------------------------------------------ */
@@ -78,47 +105,49 @@ router.post(
       const end = new Date(now.getTime() + 60 * 60 * 1000);
 
       const [reservationResult] = await pool.query(
-        `
-        INSERT INTO reservations
-        (
-          reservation_uuid,
-          customer_id,
-          partner_id,
-          service_id,
-          status_id,
-          currency_id,
-          base_amount,
-          tax_amount,
-          total_amount,
-          start_at,
-          end_at
-        )
-        VALUES
-        (
-          UUID(),
-          ?,
-          ?,
-          ?,
-          1,
-          1,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        )
-        `,
-        [
-          Client_ID,
-          partnerId,
-          Service_ID,
-          baseAmount,
-          taxAmount,
-          totalAmount,
-          now,
-          end
-        ]
-      );
+  `
+  INSERT INTO reservations
+  (
+    reservation_uuid,
+    customer_id,
+    partner_id,
+    service_id,
+    status_id,
+    currency_id,
+    base_amount,
+    tax_amount,
+    total_amount,
+    start_at,
+    end_at
+  )
+  VALUES
+  (
+    UUID(),
+    ?,
+    ?,
+    ?,
+    ?,
+    ?,
+    ?,
+    ?,
+    ?,
+    ?,
+    ?
+  )
+  `,
+  [
+    Client_ID,
+    partnerId,
+    Service_ID,
+    statusId,            // ou statusId si tu fais version propre
+    currencyId,   // ✅ FIX IMPORTANT
+    baseAmount,
+    taxAmount,
+    totalAmount,
+    now,
+    end
+  ]
+);
 
       const reservationId = reservationResult.insertId;
 
@@ -138,6 +167,10 @@ router.post(
           allow_redirects: "never",
         },
       });
+
+console.log("✅ PI CREATED:", pi.id);
+console.log("✅ CLIENT SECRET:", pi.client_secret);
+
 
       /* ------------------------------------------------ */
       /* STRIPE CHECKOUT WEB                              */
@@ -189,14 +222,15 @@ router.post(
           ?,
           ?,
           ?,
-          1,
+          ?,
           'pending'
         )
         `,
         [
           reservationId,
           pi.id,
-          totalAmount
+          totalAmount,
+	  currencyId
         ]
       );
 

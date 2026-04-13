@@ -330,10 +330,13 @@ export default function HomeScreenWeb() {
             <p>{myServices.length} service(s)</p>
           </div>
 
-          <div style={styles.sectionBox}>
-            <h2 style={styles.sectionTitle}>📅 Mes réservations</h2>
-            <p>{myBookings.length} réservation(s)</p>
-          </div>
+          <div
+  style={styles.sectionBox}
+  onClick={() => router.push("/(tabs)/reservations/ListReservations")}
+>
+  <h2 style={styles.sectionTitle}>📅 Mes réservations</h2>
+  <p>{myBookings.length} réservation(s)</p>
+</div>
 
         </div>
 
@@ -412,6 +415,18 @@ display:"grid",
 gridTemplateColumns:"repeat(auto-fill, minmax(240px,1fr))",
 gap:"20px"
 },
+
+sectionBox:{
+  background:"rgba(255,255,255,0.1)",
+  padding:"24px",
+  borderRadius:"14px",
+  cursor:"pointer",
+  transition:"0.2s",
+},
+
+sectionBoxHover:{
+  transform:"scale(1.02)"
+}
 
 
 

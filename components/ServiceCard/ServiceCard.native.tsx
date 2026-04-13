@@ -26,8 +26,7 @@ export default function ServiceCard({ service }: Props) {
       ? `${service.fee}$`
       : `${service.fee} ${currency}`;
 
-  const instancesLeft =
-    service.instances_left ?? service.instances ?? 1;
+  const instancesLeft = service.instances ?? 0;
 
   const disabled = instancesLeft <= 0;
 
@@ -50,6 +49,12 @@ export default function ServiceCard({ service }: Props) {
         {service.title}
       </Text>
 
+{disabled && (
+  <Text style={{ color: "#ff6b6b", marginTop: 4 }}>
+    🔒 Complet
+  </Text>
+)}
+
       <Text style={styles.price}>
         {price}
       </Text>
@@ -57,7 +62,13 @@ export default function ServiceCard({ service }: Props) {
       <View style={styles.instancesRow}>
         <Text style={styles.icon}>👥</Text>
 
-        <Text style={styles.instancesText}>
+        <Text
+  style={[
+    styles.instancesText,
+    instancesLeft === 0 && { color: "#ff6b6b" },
+    instancesLeft > 0 && instancesLeft <= 2 && { color: "#ffa500" }
+  ]}
+>
           {instancesLeft > 1
             ? `${instancesLeft} places disponibles`
             : instancesLeft === 1

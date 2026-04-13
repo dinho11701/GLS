@@ -12,6 +12,7 @@ Platform
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { apiFetch } from "@lib/api";
 
@@ -28,6 +29,7 @@ gray:"rgba(11,18,32,0.65)"
 
 const SERVICE_FEE_PCT = 0.08;
 
+
 const money = (n:number)=>new Intl.NumberFormat("fr-CA",{
 style:"currency",
 currency:"CAD"
@@ -35,7 +37,7 @@ currency:"CAD"
 
 const round2=(n:number)=>Math.round(n*100)/100;
 
-export default function PaymentInnerBase(){
+export default function PaymentInnerBase({ stripe = null }){
 
 const router = useRouter();
 const params = useLocalSearchParams<any>();
@@ -46,6 +48,7 @@ const basePrice = Number(params.price ?? 0);
 const [name,setName]=useState("");
 const [email,setEmail]=useState("");
 const [loading,setLoading]=useState(false);
+
 
 const fee = round2(basePrice * SERVICE_FEE_PCT);
 const total = round2(basePrice + fee);
@@ -75,11 +78,10 @@ try{
 const token = await AsyncStorage.getItem("authToken");
 
 if(!token){
+setLoading(false);
 Alert.alert("Erreur","Utilisateur non connecté");
 return;
 }
-
-console.log("TOKEN:",token);
 
 /* --------------------------------------------------- */
 /* CREATE PAYMENT INTENT */
@@ -94,8 +96,7 @@ Authorization:`Bearer ${token}`
 body:JSON.stringify({
 amount: Math.round(total*100),
 currency:"cad",
-Service_ID:String(serviceId),
-Partenaire_ID:String(params.partnerId || "1")
+Service_ID:String(serviceId)
 })
 });
 
@@ -111,10 +112,14 @@ throw new Error(data.error || "Erreur paiement");
 
 if(Platform.OS === "web"){
 
+console.log("🌐 WEB PAYMENT → REDIRECT");
+
 const stripeUrl = data.checkoutUrl;
 
-if(!stripeUrl){
-throw new Error("Stripe checkout indisponible");
+if (!stripeUrl) {
+  setLoading(false);
+  Alert.alert("Erreur","Stripe non disponible");
+  return;
 }
 
 window.location.href = stripeUrl;
@@ -126,33 +131,41 @@ return;
 /* MOBILE PAYMENT */
 /* --------------------------------------------------- */
 
-const stripeModule = require("@stripe/stripe-react-native");
-const stripe = stripeModule.useStripe();
-
-const clientSecret = data.payment_intent.client_secret;
-
-const { error } = await stripe.presentPaymentSheet({
-clientSecret
-});
-
-if(error){
-Alert.alert("Paiement annulé",error.message);
+if(Platform.OS !== "web" && !stripe){
+Alert.alert("Erreur","Stripe non disponible");
 return;
 }
 
-/* --------------------------------------------------- */
-/* CREATE RESERVATION */
-/* --------------------------------------------------- */
+const clientSecret = data.payment_intent.client_secret;
 
-await apiFetch("customers/reservations",{
-method:"POST",
-body:{
-serviceId,
-date:params.date,
-startTime:params.startTime,
-endTime:params.endTime
-}
+console.log("🔥 CLIENT SECRET FRONT:", clientSecret);
+console.log("🔥 PAYMENT RESPONSE:", data);
+
+
+// 1️⃣ INIT
+const { error: initError } = await stripe.initPaymentSheet({
+  paymentIntentClientSecret: clientSecret,
+  merchantDisplayName: "LaSolution App",
+  returnURL: "app1://stripe-redirect",
 });
+
+if (initError) {
+  Alert.alert("Erreur init Stripe", initError.message);
+  return;
+}
+
+console.log("🚀 OPENING STRIPE SHEET...");
+
+// 2️⃣ OPEN SHEET
+const { error } = await stripe.presentPaymentSheet();
+
+if (error) {
+  console.log("❌ STRIPE ERROR:", error);
+  Alert.alert("Paiement annulé", error.message);
+  return;
+} else {
+  console.log("✅ STRIPE SUCCESS");
+}
 
 /* --------------------------------------------------- */
 /* SUCCESS */

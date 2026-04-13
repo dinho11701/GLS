@@ -32,7 +32,6 @@ const partnersMessagesRouter = require("./routes/partners/messages");
 const partnersSupportRouter = require("./routes/partners/support");
 const partnersPaymentsRouter = require("./routes/partners/payments");
 const partnersStatsRouter = require("./routes/partners/statistiques");
-const partnersLookupRouter = require("./routes/partners/lookup");
 const partnersZoneRouter = require("./routes/partners/zone");
 const partnersRefundsRouter = require("./routes/partners/refunds");
 
@@ -41,15 +40,12 @@ const customersProfileRouter = require("./routes/customers/profile");
 const customersServicesRouter = require("./routes/customers/services");
 const customersReservationsRouter = require("./routes/customers/reservations");
 const customersReviewsRouter = require("./routes/customers/reviews");
-const customersPendingReviewsRouter = require("./routes/customers/reviews_pending");
 const customersPaymentsRouter = require("./routes/customers/payments");
 const customersMessagesRouter = require("./routes/customers/messages");
 const customersNotifsRouter = require("./routes/customers/notifs");
 const { reservationScoped: customersReservationNotifsRouter } =
   require("./routes/customers/notifs");
-const customersHostZonesRouter = require("./routes/customers/hostZones");
 const customersUpgradeToPartnerRouter = require("./routes/customers/upgradeToPartner");
-const customersLookupRouter = require("./routes/customers/lookup");
 
 const app = express();
 
@@ -111,8 +107,6 @@ app.use("/api/v1/partners/payments", authGuard, ensurePartner, partnersPaymentsR
 
 app.use("/api/v1/partners/statistiques", authGuard, ensurePartner, partnersStatsRouter);
 
-app.use("/api/v1/partners/lookup", authGuard, ensurePartner, partnersLookupRouter);
-
 app.use("/api/v1/partners/zone", authGuard, ensurePartner, partnersZoneRouter);
 
 app.use("/api/v1/partners/refunds", authGuard, ensurePartner, partnersRefundsRouter);
@@ -124,7 +118,6 @@ app.use("/api/v1/customers/services", customersServicesRouter);
 app.use("/api/v1/customers/reservations", customersReservationNotifsRouter);
 app.use("/api/v1/customers/reservations", customersReservationsRouter);
 
-app.use("/api/v1/customers/reviews/pending", customersPendingReviewsRouter);
 app.use("/api/v1/customers/reviews", customersReviewsRouter);
 
 app.use("/api/v1/customers/payments", customersPaymentsRouter);
@@ -133,11 +126,7 @@ app.use("/api/v1/customers/messages", customersMessagesRouter);
 
 app.use("/api/v1/customers/notifs", customersNotifsRouter);
 
-app.use("/api/v1/customers/host-zones", customersHostZonesRouter);
-
 app.use("/api/v1/customers/upgrade", customersUpgradeToPartnerRouter);
-
-app.use("/api/v1/customers/lookup", customersLookupRouter);
 
 app.use("/api/v1/customers/profile", customersProfileRouter);
 

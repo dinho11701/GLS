@@ -2,7 +2,6 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
   View,
   StyleSheet,
-  Dimensions,
   TouchableOpacity,
   Text,
   Modal,
@@ -16,18 +15,6 @@ import HostFilters from "../../components/map/HostFilters.native";
 
 const API_BASE = "http://127.0.0.1:5055/api/v1";
 
-
-type Service = {
-  id: string;
-  title: string;
-  latitude: number;
-  longitude: number;
-  radius_km: number;
-  available: boolean;
-  fee?: number;
-  rating?: number;
-};
-
 const DEFAULT_REGION: Region = {
   latitude: 45.5019,
   longitude: -73.5674,
@@ -35,16 +22,18 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.05,
 };
 
-export default function MapCustomerNative() {
+export default function MapCustomerNative({ hosts = [], onSelectHost }) {
+
   const mapRef = useRef<MapView>(null);
 
   const [region, setRegion] = useState(DEFAULT_REGION);
-  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [selectedService, setSelectedService] = useState<Service | null>(null);
-  const [services, setServices] = useState<Service[]>([]);
-  const [filters, setFilters] = useState<any>({});
+  const [userLocation, setUserLocation] = useState(null);
+  const [services, setServices] = useState([]); // 🔥 fallback
+  const [filters, setFilters] = useState({});
   const [showFilters, setShowFilters] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  console.log("HOSTS LENGTH:", hosts.length);
 
   /* ===============================
      GPS
@@ -78,44 +67,26 @@ export default function MapCustomerNative() {
   }, []);
 
   /* ===============================
-     FETCH SERVICES
+     🔥 FETCH NEARBY (IMPORTANT)
   =============================== */
 
   useEffect(() => {
     if (!userLocation) return;
 
-    const fetchServices = async () => {
-      try {
-        setLoading(true);
+    setLoading(true);
 
-        const params = new URLSearchParams({
-          lat: String(userLocation.latitude),
-          lng: String(userLocation.longitude),
-        });
+    fetch(
+      `${API_BASE}/customers/services/nearby?lat=${userLocation.latitude}&lng=${userLocation.longitude}`
+    )
+      .then(res => res.json())
+      .then(data => {
+        console.log("NEARBY DATA:", data.items);
+        setServices(data.items || []);
+      })
+      .catch(err => console.log("nearby error", err))
+      .finally(() => setLoading(false));
 
-        if (filters.category) {
-          params.append("category", filters.category.toLowerCase());
-        }
-
-        const res = await fetch(`${API_BASE}/customers/services/nearby?${params.toString()}`);
-        const data = await res.json();
-
-console.log("API RESPONSE:", data);
-
-if (data.ok) {
-  console.log("ITEMS:", data.items);
-  setServices(data.items);
-}
-
-      } catch (err) {
-        console.error("Fetch error:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchServices();
-  }, [userLocation, filters]);
+  }, [userLocation]);
 
   /* ===============================
      ZOOM
@@ -142,12 +113,21 @@ if (data.ok) {
   }, [region]);
 
   /* ===============================
+     🔥 DATA SOURCE (IMPORTANT)
+  =============================== */
+
+  const dataToUse = services;
+
+  console.log("FINAL DATA LENGTH:", dataToUse.length);
+
+  /* ===============================
      RENDER
   =============================== */
 
   return (
     <View style={styles.container}>
 
+      {/* FILTER BUTTON */}
       <TouchableOpacity
         style={styles.filterButton}
         onPress={() => setShowFilters(true)}
@@ -155,6 +135,7 @@ if (data.ok) {
         <Text style={{ color: "white", fontWeight: "bold" }}>Filtres</Text>
       </TouchableOpacity>
 
+      {/* LOADER */}
       {loading && (
         <View style={styles.loader}>
           <ActivityIndicator size="large" color="#FF6B6B" />
@@ -168,45 +149,51 @@ if (data.ok) {
         onRegionChangeComplete={setRegion}
         showsUserLocation
       >
+        {/* USER */}
         {userLocation && (
           <Marker coordinate={userLocation} pinColor="blue" />
         )}
 
-        {services.map((svc) => (
-          <React.Fragment key={svc.id}>
-            <Marker
-              coordinate={{
-                latitude: svc.latitude,
-                longitude: svc.longitude,
-              }}
-              title={svc.title}
-              pinColor="#FF6B6B"
-              onPress={() => setSelectedService(svc)}
-            />
+        {/* 🔥 HOSTS / SERVICES */}
+{dataToUse.map((item) => {
+  const lat = item.lat ?? item.latitude;
+  const lng = item.lng ?? item.longitude;
 
-            {selectedService?.id === svc.id && (
-              <Circle
-                center={{
-                  latitude: svc.latitude,
-                  longitude: svc.longitude,
-                }}
-                radius={svc.radius_km * 1000}
-                strokeColor="rgba(255,107,107,0.8)"
-                fillColor="rgba(255,107,107,0.2)"
-              />
-            )}
-          </React.Fragment>
-        ))}
-      </MapView>
+  if (!lat || !lng) return null;
 
-      {selectedService && (
-        <View style={styles.card}>
-          <Text style={styles.title}>{selectedService.title}</Text>
-          <Text>⭐ {selectedService.rating ?? 4.5}</Text>
-          <Text>À partir de {selectedService.fee ?? 90}$</Text>
-        </View>
+  // 🔥 IMPORTANT
+  const distance = item.distance_km ?? 999;
+
+  // 🔥 seuil (10km)
+  const isNearby = distance <= 10;
+
+  return (
+    <React.Fragment key={item.id}>
+      
+      {/* 🔴 PIN */}
+      <Marker
+        coordinate={{ latitude: lat, longitude: lng }}
+        title={item.name || item.title}
+        pinColor={isNearby ? "#FF6B6B" : "#999"} // 🔥 DIFFÉRENCE
+        onPress={() => onSelectHost?.(item)}
+      />
+
+      {/* 🔵 CERCLE UNIQUEMENT SI PROCHE */}
+      {isNearby && (
+        <Circle
+          center={{ latitude: lat, longitude: lng }}
+          radius={(item.radiusKm || item.radius_km || 5) * 1000}
+          strokeColor="rgba(255,107,107,0.8)"
+          fillColor="rgba(255,107,107,0.2)"
+        />
       )}
 
+    </React.Fragment>
+  );
+})}
+      </MapView>
+
+      {/* FILTER MODAL */}
       <Modal visible={showFilters} animationType="slide">
         <HostFilters
           onApply={(f) => {
@@ -244,22 +231,5 @@ const styles = StyleSheet.create({
     top: "50%",
     alignSelf: "center",
     zIndex: 999,
-  },
-
-  card: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: "white",
-    padding: 16,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    elevation: 10,
-  },
-
-  title: {
-    fontSize: 18,
-    fontWeight: "bold",
   },
 });

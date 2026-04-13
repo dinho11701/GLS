@@ -76,6 +76,41 @@ router.post("/", async (req, res) => {
       ]
     );
 
+// 🔥 GET REAL PARTNER UUID
+const [partnerRows] = await pool.query(
+  "SELECT partenaire_id FROM partners WHERE email = ?",
+  [req.user.email]
+);
+
+if (partnerRows.length === 0) {
+  throw new Error("partner_not_found");
+}
+
+const partnerUUID = partnerRows[0].partenaire_id;
+
+// 🔥 SYNC SERVICES LOCATION
+const point = `POINT(${center.longitude} ${center.latitude})`;
+
+await pool.query(
+  `
+  UPDATE services
+  SET
+    latitude = ?,
+    longitude = ?,
+    location = ST_SRID(ST_GeomFromText(?), 4326),
+    updated_at = NOW()
+  WHERE partner_id = ?
+  `,
+  [
+    center.latitude,
+    center.longitude,
+    point,
+    partnerUUID
+  ]
+);
+
+console.log("🔥 Services location synced");
+
     console.log("✅ Zone saved");
 
     return res.json({ ok: true });

@@ -1,4 +1,7 @@
-import React from "react";
-import PaymentInner from "./paymentInnerBase";
+import { useStripe } from "@stripe/stripe-react-native";
+import PaymentInnerBase from "./paymentInnerBase";
 
-export default PaymentInner;
+export default function PaymentInner() {
+  const stripe = useStripe();
+  return <PaymentInnerBase stripe={stripe} />;
+}

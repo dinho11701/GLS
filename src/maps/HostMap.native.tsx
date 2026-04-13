@@ -69,8 +69,8 @@ export default function HostMapNative({ host, onSave }: Props) {
   const handleSave = async () => {
     const updatedHost: Host = {
       ...host,
-      lat: location.latitude,
-      lng: location.longitude,
+  lat: location.latitude,
+  lng: location.longitude,
       radiusKm,
       isActive,
     };

@@ -1,15 +1,15 @@
 import React, { useState, useMemo } from "react";
-import { View, StyleSheet, Platform } from "react-native";
-
-import MapCustomerNative from "@/maps/MapCustomer.native";
-import MapCustomerWeb from "@/maps/MapCustomer.web";
-
-import FiltersPanel from "./FiltersPanel";
-import HostDetailsSheet from "./HostDetailsSheet.native";
-import HostDetailsModal from "./HostDetailsModal.web";
+import { View, StyleSheet, Platform, Text } from "react-native";
 
 import { getDistanceKm } from "@/utils/geo";
 import { Host } from "./types";
+
+import MapCustomerNative from "./MapCustomerNative";
+import MapCustomerWeb from "./MapCustomerHere.web";
+
+import HostPreviewCard from "../../../components/map/HostPreviewCard";
+import FiltersPanel from "./FiltersPanel";
+import { useRouter } from "expo-router";
 
 type Props = {
   hosts: Host[];
@@ -17,7 +17,11 @@ type Props = {
 };
 
 export default function CustomerMapScreen({ hosts, userLocation }: Props) {
+  const router = useRouter();
+
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
+  const [showServicesModal, setShowServicesModal] = useState(false);
+
   const [filters, setFilters] = useState({
     service: "",
     maxDistance: 20,
@@ -37,30 +41,70 @@ export default function CustomerMapScreen({ hosts, userLocation }: Props) {
       const matchesDistance = distance <= filters.maxDistance;
       const matchesRating = host.rating >= filters.minRating;
       const matchesService =
-        !filters.service || host.services.includes(filters.service);
+        !filters.service || host.services?.includes(filters.service);
 
       return coversUser && matchesDistance && matchesRating && matchesService;
     });
   }, [hosts, filters, userLocation]);
 
-  const MapComponent =
-    Platform.OS === "web" ? MapCustomerWeb : MapCustomerNative;
-
-  const DetailsComponent =
-    Platform.OS === "web" ? HostDetailsModal : HostDetailsSheet;
-
   return (
     <View style={styles.container}>
-      <FiltersPanel filters={filters} setFilters={setFilters} />
+      {/* MAP */}
+      {Platform.OS === "web" ? (
+        <MapCustomerWeb
+          hosts={filteredHosts}
+          onSelectHost={(host: Host | null) => {
+            console.log("HOST SELECTED", host);
+            setSelectedHost(host);
+          }}
+        />
+      ) : (
+        <MapCustomerNative
+          hosts={filteredHosts}
+          onSelectHost={(host: Host | null) => {
+            console.log("HOST SELECTED", host);
+            setSelectedHost(host);
+          }}
+        />
+      )}
 
-      <MapComponent
-        hosts={filteredHosts}
-        onSelectHost={setSelectedHost}
-      />
-
+      {/* TEST CARD */}
       {selectedHost && (
-        <DetailsComponent
+        <View
+          style={{
+            position: "absolute",
+            bottom: 100,
+            left: 20,
+            right: 20,
+            backgroundColor: "red",
+            padding: 20,
+            zIndex: 999,
+          }}
+        >
+          <Text style={{ color: "white" }}>
+            TEST CARD: {selectedHost.name}
+          </Text>
+        </View>
+      )}
+
+      {/* FILTERS */}
+      <View style={styles.filtersWrapper}>
+        <FiltersPanel filters={filters} setFilters={setFilters} />
+      </View>
+
+      {/* PREVIEW CARD */}
+      {selectedHost && !showServicesModal && (
+        <HostPreviewCard
           host={selectedHost}
+          onViewProfile={() => {
+            router.push({
+              pathname: "/partner/[id]",
+              params: { id: selectedHost.id },
+            });
+          }}
+          onBook={() => {
+            setShowServicesModal(true);
+          }}
           onClose={() => setSelectedHost(null)}
         />
       )}
@@ -70,4 +114,12 @@ export default function CustomerMapScreen({ hosts, userLocation }: Props) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+
+  filtersWrapper: {
+    position: "absolute",
+    top: 60,
+    alignSelf: "center",
+    width: "90%",
+    zIndex: 20,
+  },
 });

@@ -27,10 +27,17 @@ export default function FiltersPanel({ filters, setFilters }) {
 }
 
 const styles = StyleSheet.create({
+  
   container: {
     padding: 12,
     backgroundColor: "#fff",
+    borderRadius: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
   },
+
   input: {
     borderWidth: 1,
     borderColor: "#ddd",

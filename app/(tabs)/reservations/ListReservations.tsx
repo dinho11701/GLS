@@ -14,6 +14,10 @@ import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 
 
+const API_BASE = (
+  process.env.EXPO_PUBLIC_API_BASE ?? "http://127.0.0.1:5055/api/v1"
+).replace(/\/+$/, "");
+
 const PALETTE = {
   primary: "#0A0F2C",
   white: "#FFFFFF",
@@ -108,10 +112,12 @@ export default function ListReservations() {
   const fetchReservations = useCallback(async () => {
     setLoading(true);
     try {
-      const token = await AsyncStorage.getItem("idToken");
+      const token = await AsyncStorage.getItem("authToken");
+
+console.log("🔥 TOKEN USED:", token);
 
       const resp = await fetch(
-        `${process.env.EXPO_PUBLIC_API_BASE}/partners/reservations`,
+        `${API_BASE}/partners/reservations`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -136,10 +142,10 @@ export default function ListReservations() {
   /* Send Accept / Refuse */
   const updateStatus = async (id, status) => {
     try {
-      const token = await AsyncStorage.getItem("idToken");
+      const token = await AsyncStorage.getItem("authToken");
 
       await fetch(
-        `${process.env.EXPO_PUBLIC_API_BASE}/partners/reservations/${id}/status`,
+        `${API_BASE}/partners/reservations/${id}/status`,
         {
           method: "PATCH",
           headers: {

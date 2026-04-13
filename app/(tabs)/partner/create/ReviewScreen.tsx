@@ -10,6 +10,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 
+import * as Location from "expo-location";
+
 const PALETTE = {
   primary: '#0A0F2C', white: '#FFFFFF', cream: '#F9FAFB', textDark:'#0B1220',
   placeholder:'rgba(11,18,32,0.45)', coral:'#FF6B6B', gold:'#FFD700',
@@ -82,6 +84,9 @@ async function fetchWithAuth(url: string, init: RequestInit = {}) {
 
 export default function ReviewScreen() {
   const router = useRouter();
+  
+  const [coords, setCoords] = useState<any>(null);
+  const [loadingLocation, setLoadingLocation] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState(false);
@@ -100,6 +105,36 @@ export default function ReviewScreen() {
     const list = fromNew.length ? fromNew : (s3.images ?? []);
     return uniqBy(list, (p) => String(p.uri));
   }, [s3]);
+
+
+  const getLocation = async () => {
+  try {
+    setLoadingLocation(true);
+
+    const { status } = await Location.requestForegroundPermissionsAsync();
+
+    if (status !== "granted") {
+      Alert.alert("Permission refusée", "Active le GPS pour publier");
+      return null;
+    }
+
+    const loc = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.High,
+    });
+
+    console.log("📍 HOST LOCATION:", loc.coords);
+
+    setCoords(loc.coords);
+
+    return loc.coords;
+
+  } catch (e) {
+    console.log("GPS error", e);
+    return null;
+  } finally {
+    setLoadingLocation(false);
+  }
+};
 
   const loadDrafts = useCallback(async () => {
     try {
@@ -178,10 +213,6 @@ const payload = useMemo(() => {
     // valeur temporaire
     radius_km: 10,
 
-    // coordonnées temporaires (sinon validation échoue)
-    latitude: 45.5017,
-    longitude: -73.5673
-
   }
 
 }, [s1, s2])
@@ -189,94 +220,82 @@ const payload = useMemo(() => {
   const publish = useCallback(async () => {
 
   if (!isValid) {
-    Alert.alert(
-      "Champs manquants",
-      "Complète au moins Titre, Catégorie, Description et Prix (> 0)."
-    )
-    return
+    Alert.alert("Champs manquants", "Complète les champs requis.");
+    return;
   }
 
-  setPublishing(true)
+  let currentCoords = coords;
+
+  if (!currentCoords) {
+    currentCoords = await getLocation();
+
+    if (!currentCoords) {
+      Alert.alert("Erreur", "Impossible de récupérer ta position.");
+      return;
+    }
+  }
+
+  setPublishing(true);
 
   try {
 
-    const token = await AsyncStorage.getItem("authToken")
+    const token = await AsyncStorage.getItem("authToken");
 
     if (!token) {
-      throw new Error("Non connecté — reconnecte-toi pour publier.")
+      throw new Error("Non connecté — reconnecte-toi pour publier.");
     }
 
     const idempotency =
-      `svc_${Date.now()}_${Math.random().toString(36).slice(2)}`
+      `svc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-    // ⚠️ correction ici (évite le bug Metro sur await)
-    const requestConfig: RequestInit = {
+    const finalPayload = {
+      ...payload,
+      latitude: currentCoords.latitude,
+      longitude: currentCoords.longitude,
+    };
+
+    console.log("🚀 FINAL PAYLOAD:", finalPayload);
+
+    const resp = await fetchWithAuth(PUBLISH_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotency
+        "X-Idempotency-Key": idempotency,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(finalPayload),
+    });
+
+    const text = await resp.text();
+    let data = {};
+
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {}
+
+    const serviceId =
+      data?.serviceId ?? data?.item?.id ?? data?.id ?? null;
+
+    if (serviceId && s4?.availability) {
+      await fetchWithAuth(
+        `${API_BASE}/partners/services/${serviceId}/availability`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            days: s4.availability.days,
+            startTime: s4.availability.startTime,
+            endTime: s4.availability.endTime,
+            instances: s4.availability.instances ?? 1,
+          }),
+        }
+      );
     }
-
-    const resp = await fetchWithAuth(PUBLISH_URL, requestConfig)
-
-    const text = await resp.text()
-
-console.log("RAW RESPONSE:", text)
-
-let data = {}
-
-try {
-  data = text ? JSON.parse(text) : {}
-} catch {}
-
-console.log("PARSED DATA:", data)
-
-const serviceId =
-  data?.serviceId ??
-  data?.item?.id ??
-  data?.id ??
-  null
-
-console.log("SERVICE ID:", serviceId)
-
-if (serviceId && s4?.availability) {
-
-  const availabilityResp = await fetchWithAuth(
-    `${API_BASE}/partners/services/${serviceId}/availability`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        days: s4.availability.days,
-        startTime: s4.availability.startTime,
-        endTime: s4.availability.endTime,
-        instances: s4.availability.instances ?? 1
-      })
-    }
-  )
-
-  const availabilityData = await availabilityResp.json().catch(() => ({}))
-
-  console.log("AVAILABILITY STATUS:", availabilityResp.status)
-  console.log("AVAILABILITY RESPONSE:", availabilityData)
-
-  if (!availabilityResp.ok) {
-    throw new Error("Impossible d'enregistrer les disponibilités")
-  }
-
-}
 
     if (!resp.ok) {
-
       const msg =
         (data?.message || data?.error || text || "Erreur de publication")
-          .toString()
-
-      throw new Error(`${msg} (HTTP ${resp.status})`)
+          .toString();
+      throw new Error(`${msg} (HTTP ${resp.status})`);
     }
 
     await Promise.all([
@@ -284,28 +303,22 @@ if (serviceId && s4?.availability) {
       AsyncStorage.removeItem("draft_service_step2_price"),
       AsyncStorage.removeItem("draft_service_step3_pictures"),
       AsyncStorage.removeItem("draft_service_step4_availability"),
-    ])
+    ]);
 
-    Alert.alert(
-      "Publié",
-      `Ton offre a été publiée${data?.item?.id ? ` (ID: ${data.item.id})` : ""}.`,
-      [{
+    Alert.alert("Publié", "Ton offre a été publiée.", [
+      {
         text: "OK",
-        onPress: () => router.replace("/(tabs)/partner")
-      }]
-    )
+        onPress: () => router.replace("/(tabs)/partner"),
+      },
+    ]);
 
   } catch (e: any) {
-
-    Alert.alert("Échec", e?.message || "Impossible de publier.")
-
+    Alert.alert("Échec", e?.message || "Impossible de publier.");
   } finally {
-
-    setPublishing(false)
-
+    setPublishing(false);
   }
 
-}, [isValid, payload, router])
+}, [isValid, payload, router, coords]);
 
   if (loading) {
     return (

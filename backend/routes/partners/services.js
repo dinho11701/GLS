@@ -283,20 +283,34 @@ router.put("/:id", authGuard, [param("id").isString()], async (req, res) => {
     const { id } = req.params;
     const partnerId = req.user.id;
 
-    const { title, description, fee, radius_km } = req.body;
+    const { title, description, fee, radius_km, latitude, longitude } = req.body;
 
     await db.execute(
       `
       UPDATE services
-      SET
-        title = ?,
-        description = ?,
-        fee = ?,
-        radius_km = ?,
-        updated_at = NOW()
+SET
+  title = ?,
+  description = ?,
+  fee = ?,
+  radius_km = ?,
+  latitude = ?,
+  longitude = ?,
+  location = ST_SRID(ST_GeomFromText(?), 4326),
+  updated_at = NOW()
+WHERE id = ? AND partner_id = ?
       WHERE id = ? AND partner_id = ?
       `,
-      [title, description, fee, radius_km, id, partnerId]
+      [
+    title,
+    description,
+    fee,
+    radius_km,
+    latitude,
+    longitude,
+    point,
+    id,
+    partnerId
+  ]
     );
 
     return res.json({ ok: true });

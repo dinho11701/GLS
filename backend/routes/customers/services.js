@@ -203,17 +203,19 @@ router.get(
           s.status,
           s.category_id,
           c.slug,
-          ST_Y(s.location) AS latitude,
-          ST_X(s.location) AS longitude,
+s.latitude AS latitude,
+s.longitude AS longitude,
           ST_Distance_Sphere(
-            POINT(ST_X(s.location), ST_Y(s.location)),
-            POINT(?, ?)
-          ) / 1000 AS distance_km
+  POINT(s.longitude, s.latitude),
+  POINT(?, ?)
+) / 1000 AS distance_km
         FROM services s
         JOIN categories c ON s.category_id = c.id
         WHERE
           s.available = TRUE
-          AND s.status = 'active'
+  AND s.status = 'active'
+  AND s.latitude BETWEEN -90 AND 90
+  AND s.longitude BETWEEN -180 AND 180
       `;
 
       const params = [longitude, latitude];
@@ -224,14 +226,8 @@ router.get(
       }
 
       sql += `
-        AND ST_Distance_Sphere(
-          POINT(ST_X(s.location), ST_Y(s.location)),
-          POINT(?, ?)
-        ) <= s.radius_km * 1000
         ORDER BY distance_km ASC
       `;
-
-      params.push(longitude, latitude);
 
       console.log("NEARBY SQL:", sql);
       console.log("NEARBY PARAMS:", params);
@@ -281,35 +277,49 @@ router.get("/", async (req, res) => {
 
     /* ---------- DATE ---------- */
 
-    let searchDate = date;
+    // 🔥 1. Convertir correctement la date
+const searchDateObj = date ? new Date(date) : new Date();
 
-    if (!searchDate) {
-      const today = new Date();
-      searchDate = today.toISOString().split("T")[0];
-    }
+// 🔥 2. Sécurité
+if (isNaN(searchDateObj.getTime())) {
+  console.log("❌ INVALID DATE:", date);
+  return res.json({ ok: true, items: [] });
+}
 
-    const parts = searchDate.split("-");
-const d = new Date(parts[0], parts[1]-1, parts[2]);
+// 🔥 3. Format SQL (YYYY-MM-DD)
+const searchDate = searchDateObj.toISOString().split("T")[0];
 
-let weekday = d.getDay();
+// 🔥 4. Weekday JS → SQL
+let weekday = searchDateObj.getDay(); // 0-6
 weekday = weekday === 0 ? 7 : weekday;
 
-console.log("SEARCH DATE:", searchDate)
-console.log("WEEKDAY:", weekday)
+console.log("SEARCH DATE:", searchDate);
+console.log("WEEKDAY:", weekday);
 
     /* ---------- SQL BUILDER ---------- */
 
     let sql = `
       SELECT DISTINCT
-        s.id,
-        s.title,
-        s.description,
-        s.fee,
-        s.category_id,
-        c.slug,
-        s.status,
-        s.available,
-        s.created_at
+  s.id,
+  s.title,
+  s.description,
+  s.fee,
+  s.category_id,
+  c.slug,
+  s.status,
+  s.available,
+  s.created_at,
+  s.instances,
+
+  (
+    s.instances - (
+      SELECT COUNT(*)
+      FROM reservations r
+      WHERE r.service_id = s.id
+      AND DATE(r.start_at) = ?
+      AND r.status_id != 4
+    )
+  ) AS instances_left
       FROM services s
       JOIN categories c ON s.category_id = c.id
       JOIN service_availability sa
@@ -320,8 +330,7 @@ console.log("WEEKDAY:", weekday)
         AND s.available = TRUE
     `;
 
-    const params = [weekday];
-
+const params = [searchDate, weekday];
     /* ---------- CATEGORY ---------- */
 
     if (category && category !== "null" && category !== "undefined") {
@@ -331,17 +340,6 @@ console.log("WEEKDAY:", weekday)
 
     /* ---------- CAPACITÉ JOURNALIÈRE ---------- */
 
-sql += `
-AND (
-  SELECT COUNT(*)
-  FROM reservations r
-  WHERE r.service_id = s.id
-  AND DATE(r.start_at) = ?
-  AND r.status_id != 4
-) < s.instances
-`;
-
-    params.push(searchDate);
 
     /* ---------- PRICE ---------- */
 

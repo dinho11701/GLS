@@ -18,18 +18,19 @@ export default function HostMapScreen() {
         const data = await fetchPartnerZone();
 
         setHost({
-          id: data.partnerId,
+          id: data.zone.partner_id,
           name: "Mon entreprise",
-          lat: data.center.latitude,
-          lng: data.center.longitude,
-          radiusKm: data.radiusKm,
-          isActive: data.available,
+          lat: data.zone.latitude,
+          lng: data.zone.longitude,
+          radiusKm: data.zone.radius_km,
+          isActive: data.zone.available,
           services: [],
         });
-      } catch (err) {
-        console.log("No existing zone → creating default");
 
-        // si aucune zone encore créée
+      } catch (err) {
+        console.log("❌ fetchPartnerZone failed:", err);
+
+        // fallback SAFE
         setHost({
           id: "temp",
           name: "Mon entreprise",
@@ -57,14 +58,19 @@ export default function HostMapScreen() {
     <HostMapNative
       host={host}
       onSave={async (updated) => {
-        await savePartnerZone({
-          latitude: updated.lat,
-          longitude: updated.lng,
-          radiusKm: updated.radiusKm,
-          available: updated.isActive ?? true,
-        });
+        try {
+          await savePartnerZone({
+            latitude: updated.lat,
+            longitude: updated.lng,
+            radiusKm: updated.radiusKm,
+            available: updated.isActive ?? true,
+          });
 
-        setHost(updated);
+          setHost(updated);
+
+        } catch (err) {
+          console.log("❌ Save error:", err);
+        }
       }}
     />
   );

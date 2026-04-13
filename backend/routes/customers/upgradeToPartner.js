@@ -1,132 +1,117 @@
 // backend/routes/customers/upgradeToPartner.js
-const express = require('express');
-const authGuard = require('../../middleware/authGuard');
-const { db, admin } = require('../../config/firebase');
+
+const express = require("express");
+const authGuard = require("../../middleware/authGuard");
+const pool = require("../../config/mysql");
 
 const router = express.Router();
 
-router.post('/upgrade-to-partner', authGuard, async (req, res) => {
-  try {
-    const uid = req.user?.uid;
-    const email = req.user?.email || req.user?.claims?.email || null;
+router.post("/upgrade-to-partner", authGuard, async (req, res) => {
+  const connection = await pool.getConnection();
 
-    if (!uid) {
-      return res.status(401).json({ error: 'Non authentifié.' });
+  try {
+    const customerId = req.user?.id;
+    const email = req.user?.email || null;
+
+    if (!customerId) {
+      return res.status(401).json({ error: "Non authentifié." });
     }
 
-    const now = new Date();
+    await connection.beginTransaction();
 
     /* ---------------------------------------------------------
-       1) CUSTOMER — créer ou mettre à jour + rôle = partner
+       1️⃣ GET CUSTOMER
     --------------------------------------------------------- */
-    const customerRef = db.collection('customers').doc(uid);
-    const customerSnap = await customerRef.get().catch(() => null);
-    let customerData = customerSnap?.exists ? customerSnap.data() : null;
-
-    if (!customerData) {
-      customerData = {
-        userId: uid,
-        email,
-        role: "partner",      // 🔥 OBLIGATOIRE
-        type: "partner",      // 🔥 OBLIGATOIRE
-        createdAt: now,
-        updatedAt: now,
-        fromUpgrade: true,
-      };
-    }
-
-    // Mise à jour obligatoire du rôle
-    await customerRef.set(
-      {
-        email: customerData.email || email || null,
-        role: "partner",       // 🔥 IMPORTANT
-        type: "partner",       // 🔥 IMPORTANT
-        updatedAt: now,
-      },
-      { merge: true }
+    const [customerRows] = await connection.query(
+      `SELECT * FROM customers WHERE id = ?`,
+      [customerId]
     );
 
+    if (!customerRows.length) {
+      await connection.rollback();
+      return res.status(404).json({ error: "Client introuvable." });
+    }
+
+    const customer = customerRows[0];
+
     /* ---------------------------------------------------------
-       2) PARTNER — créer ou mettre à jour + rôle = partner
+       2️⃣ CHECK SI DEJA PARTNER
     --------------------------------------------------------- */
-    const partnerRef = db.collection('partners').doc(uid);
-    const partnerSnap = await partnerRef.get().catch(() => null);
+    const [partnerRows] = await connection.query(
+      `SELECT * FROM partners WHERE email = ? LIMIT 1`,
+      [customer.email]
+    );
 
-    const displayName =
-      customerData.displayName ||
-      customerData.name ||
-      req.user?.name ||
-      "Nouveau partenaire";
-
+    let partnerId = null;
     let alreadyPartner = false;
 
-    if (!partnerSnap?.exists) {
-      await partnerRef.set(
-        {
-          uid,
-          email: customerData.email || email || null,
-          displayName,
-          ownerUid: uid,
-          status: "active",
-          role: "partner",       // 🔥 AJOUT
-          createdAt: now,
-          updatedAt: now,
-          fromCustomerUpgrade: true,
-        },
-        { merge: true }
-      );
-    } else {
+    if (partnerRows.length) {
       alreadyPartner = true;
-      await partnerRef.set(
-        {
-          email: partnerSnap.data().email || customerData.email || email || null,
-          displayName: partnerSnap.data().displayName || displayName,
-          role: "partner",       // 🔥 AJOUT
-          updatedAt: now,
-        },
-        { merge: true }
+      partnerId = partnerRows[0].id;
+    } else {
+      /* ---------------------------------------------------------
+         3️⃣ CREATE PARTNER
+      --------------------------------------------------------- */
+      const displayName =
+        customer.user ||
+        customer.nom ||
+        "Nouveau partenaire";
+
+      const [insertPartner] = await connection.query(
+        `
+        INSERT INTO partners
+        (
+          partenaire_id,
+          nom,
+          secteur,
+          numero_phone,
+          adresse,
+          email,
+          password_hash,
+          nom_owner,
+          user
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          `P-${customerId}`,           // partenaire_id
+          displayName,                // nom
+          "Non défini",               // secteur
+          customer.phone || null,
+          customer.adresse || null,
+          customer.email,
+          customer.password_hash,     // ⚠️ réutilisé
+          customer.nom || null,
+          customer.user || null,
+        ]
       );
+
+      partnerId = insertPartner.insertId;
     }
 
     /* ---------------------------------------------------------
-       3) FIREBASE CUSTOM CLAIMS
+       4️⃣ COMMIT
     --------------------------------------------------------- */
-    let mustRefreshToken = false;
+    await connection.commit();
 
-    try {
-      const record = await admin.auth().getUser(uid);
-      const currentClaims = record.customClaims || {};
-
-      const nextClaims = {
-        ...currentClaims,
-        isPartner: true,
-        role: "partner",     // 🔥 UNIFORMISATION
-      };
-
-      await admin.auth().setCustomUserClaims(uid, nextClaims);
-      mustRefreshToken = true;
-    } catch (e) {
-      console.warn('[UPGRADE_TO_PARTNER][CLAIMS][WARN]', e.message || e);
-    }
-
-    /* ---------------------------------------------------------
-       4) RÉPONSE FINALE
-    --------------------------------------------------------- */
     return res.status(alreadyPartner ? 409 : 200).json({
       ok: true,
-      uid,
-      partnerId: partnerRef.id,
-      mustRefreshToken,
+      customerId,
+      partnerId,
       message: alreadyPartner
         ? "Utilisateur déjà partenaire."
         : "Utilisateur promu au rôle partenaire.",
     });
 
   } catch (e) {
+    await connection.rollback();
     console.error("[UPGRADE_TO_PARTNER][ERROR]", e);
+
     return res.status(500).json({
       error: "Erreur lors de la mise à niveau.",
     });
+  } finally {
+    connection.release();
   }
 });
 

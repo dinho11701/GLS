@@ -26,7 +26,7 @@ router.post(
   "/",
   authGuard,
   [
-    body("serviceId").isInt(),
+    body("serviceId").isString(), // ⚠️ UUID (char36)
     body("rating").isInt({ min: 1, max: 5 }),
     body("comment").optional().isString().isLength({ max: 2000 }),
   ],
@@ -41,7 +41,7 @@ router.post(
       const { serviceId, rating, comment = "" } = req.body;
       const customerId = req.user.id;
 
-      /* ---------------- 1️⃣ Service existe ? ---------------- */
+      /* ---------------- 1️⃣ Service existe ---------------- */
       const [serviceRows] = await connection.query(
         `SELECT id, rating_count, rating_sum FROM services WHERE id = ?`,
         [serviceId]
@@ -57,7 +57,7 @@ router.post(
 
       const service = serviceRows[0];
 
-      /* ---------------- 2️⃣ Vérifier réservation complétée ---------------- */
+      /* ---------------- 2️⃣ Reservation complétée ---------------- */
       const [reservationRows] = await connection.query(
         `
         SELECT id
@@ -78,6 +78,8 @@ router.post(
             "Vous devez avoir complété une réservation avant de laisser un avis.",
         });
       }
+
+      const reservationId = reservationRows[0].id;
 
       /* ---------------- 3️⃣ Anti doublon ---------------- */
       const [existingReview] = await connection.query(
@@ -117,10 +119,7 @@ router.post(
       await connection.query(
         `
         UPDATE services
-        SET
-          rating_count = ?,
-          rating_sum = ?,
-          rating_avg = ?
+        SET rating_count = ?, rating_sum = ?, rating_avg = ?
         WHERE id = ?
         `,
         [newRatingCount, newRatingSum, newRatingAvg, serviceId]
@@ -131,9 +130,22 @@ router.post(
         `
         UPDATE reservations
         SET review_submitted = 1
-        WHERE customer_id = ? AND service_id = ?
+        WHERE id = ?
         `,
-        [customerId, serviceId]
+        [reservationId]
+      );
+
+      /* ---------------- 7️⃣ 🔥 MARK NOTIF AS READ ---------------- */
+      await connection.query(
+        `
+        UPDATE notifications
+        SET is_read = 1, read_at = NOW()
+        WHERE user_id = ?
+          AND user_type = 'customer'
+          AND type = 'review'
+          AND reference_id = ?
+        `,
+        [customerId, reservationId]
       );
 
       await connection.commit();
@@ -146,6 +158,7 @@ router.post(
           comment,
         },
       });
+
     } catch (error) {
       await connection.rollback();
       console.error("[REVIEWS][CREATE]", error);

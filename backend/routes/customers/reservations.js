@@ -110,6 +110,17 @@ router.post(
 
       const reservationUUID = generateUUID();
 
+/* 🔥 CHECK INSTANCES BEFORE BOOKING */
+const [checkRows] = await connection.query(
+  `SELECT instances FROM services WHERE id = ?`,
+  [serviceId]
+);
+
+if (!checkRows.length || checkRows[0].instances <= 0) {
+  await connection.rollback();
+  return res.status(400).json({ error: "Pas de places disponible" });
+}
+
       /* 5️⃣ Insert reservation */
       await connection.query(
         `
@@ -146,6 +157,16 @@ router.post(
           durationMinutes,
         ]
       );
+
+/* 🔥 6️⃣ Decrease instances */
+await connection.query(
+  `
+  UPDATE services
+  SET instances = instances - 1
+  WHERE id = ? AND instances > 0
+  `,
+  [service.id]
+);
 
       /* 6️⃣ Create notification */
       await connection.query(
@@ -283,7 +304,7 @@ router.delete("/:uuid", authGuard, async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT id, customer_id, status_id
+      SELECT id, customer_id, status_id, service_id
       FROM reservations
       WHERE reservation_uuid = ?
       `,
@@ -309,14 +330,30 @@ router.delete("/:uuid", authGuard, async (req, res) => {
 
     const cancelledStatusId = statusRows[0].id;
 
-    await connection.query(
-      `
-      UPDATE reservations
-      SET status_id = ?, updated_at = NOW()
-      WHERE reservation_uuid = ?
-      `,
-      [cancelledStatusId, reservationUUID]
-    );
+/* Prevent double cancel */
+if (reservation.status_id === cancelledStatusId) {
+  await connection.rollback();
+  return res.status(400).json({ error: "Already cancelled" });
+}
+
+await connection.query(
+  `
+  UPDATE reservations
+  SET status_id = ?, updated_at = NOW()
+  WHERE reservation_uuid = ?
+  `,
+  [cancelledStatusId, reservationUUID]
+);
+
+/* 🔥 Restore instances */
+await connection.query(
+  `
+  UPDATE services
+  SET instances = instances + 1
+  WHERE id = ?
+  `,
+  [reservation.service_id]
+);
 
     /* Notification */
     await connection.query(
